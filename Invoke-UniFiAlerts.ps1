@@ -42,8 +42,7 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 
 $Script:RequiredEnvVars = @(
     'UNIFI_BASE_URL',
-    'UNIFI_USERNAME',
-    'UNIFI_PASSWORD',
+    'UNIFI_API_KEY',
     'AT_BASE_URL',
     'AT_USERNAME',
     'AT_SECRET',
@@ -54,8 +53,7 @@ $Script:RequiredEnvVars = @(
 )
 
 $Script:UniFiBaseUrl    = $env:UNIFI_BASE_URL
-$Script:UniFiUsername   = $env:UNIFI_USERNAME
-$Script:UniFiPassword   = $env:UNIFI_PASSWORD
+$Script:UniFiApiKey     = $env:UNIFI_API_KEY
 $Script:UniFiSiteFilter = if ($env:UNIFI_SITE_FILTER) {
     $env:UNIFI_SITE_FILTER -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
 } else { @() }
@@ -126,25 +124,25 @@ public class TrustAllCertsPolicy : ICertificatePolicy {
 function Invoke-UniFiRequest {
     <#
     .SYNOPSIS
-        Wrapper around Invoke-RestMethod that injects the UniFi WebSession and
-        handles -SkipCertificateCheck for PS 7+.
+        Wrapper around Invoke-RestMethod that injects the UniFi API key header
+        and handles -SkipCertificateCheck for PS 7+.
     #>
     param(
         [string]$Uri,
         [string]$Method = 'GET',
         [hashtable]$Body,
-        [Microsoft.PowerShell.Commands.WebRequestSession]$WebSession
+        [string]$ApiKey
     )
 
     $params = @{
         Uri         = $Uri
         Method      = $Method
         ContentType = 'application/json'
+        Headers     = @{ 'X-API-Key' = $ApiKey }
         ErrorAction = 'Stop'
     }
 
-    if ($WebSession) { $params['WebSession'] = $WebSession }
-    if ($Body)       { $params['Body']       = ($Body | ConvertTo-Json -Depth 10) }
+    if ($Body) { $params['Body'] = ($Body | ConvertTo-Json -Depth 10) }
     if ($PSVersionTable.PSVersion.Major -ge 6) { $params['SkipCertificateCheck'] = $true }
 
     Invoke-RestMethod @params
@@ -153,45 +151,38 @@ function Invoke-UniFiRequest {
 function Get-UniFiSession {
     <#
     .SYNOPSIS
-        Authenticates against the UniFi Cloud Controller and returns a session
-        hashtable containing the BaseUrl and the authenticated WebSession.
+        Validates the UniFi API key by making a test request, then returns a
+        session hashtable containing BaseUrl and ApiKey for use in subsequent calls.
+        No login or session cookie is required — the API key is sent as a header.
     .OUTPUTS
-        Hashtable: { BaseUrl, WebSession }
+        Hashtable: { BaseUrl, ApiKey }
     #>
     param(
-        [string]$BaseUrl   = $Script:UniFiBaseUrl,
-        [string]$Username  = $Script:UniFiUsername,
-        [string]$Password  = $Script:UniFiPassword
+        [string]$BaseUrl = $Script:UniFiBaseUrl,
+        [string]$ApiKey  = $Script:UniFiApiKey
     )
 
     Enable-SelfSignedCerts
 
-    $loginUri  = "$BaseUrl/api/login"
-    $loginBody = @{ username = $Username; password = $Password }
+    Write-Log -Level Info -Message "Validating UniFi API key against controller: $BaseUrl"
 
-    Write-Log -Level Info -Message "Authenticating to UniFi controller: $BaseUrl"
+    # Validate by fetching sites — a lightweight call that confirms the key works
+    try {
+        $response = Invoke-UniFiRequest -Uri "$BaseUrl/api/self/sites" -ApiKey $ApiKey
 
-    $loginParams = @{
-        Uri             = $loginUri
-        Method          = 'POST'
-        Body            = ($loginBody | ConvertTo-Json)
-        ContentType     = 'application/json'
-        SessionVariable = 'webSession'
-        ErrorAction     = 'Stop'
+        if ($response.meta.rc -ne 'ok') {
+            throw "Controller returned: $($response.meta.msg)"
+        }
     }
-    if ($PSVersionTable.PSVersion.Major -ge 6) { $loginParams['SkipCertificateCheck'] = $true }
-
-    $response = Invoke-RestMethod @loginParams
-
-    if ($response.meta.rc -ne 'ok') {
-        throw "UniFi login failed. Controller response: $($response.meta.msg)"
+    catch {
+        throw "UniFi API key validation failed for $BaseUrl — $_"
     }
 
-    Write-Log -Level Info -Message 'UniFi authentication successful'
+    Write-Log -Level Info -Message 'UniFi API key validated successfully'
 
     return @{
-        BaseUrl    = $BaseUrl
-        WebSession = $webSession
+        BaseUrl = $BaseUrl
+        ApiKey  = $ApiKey
     }
 }
 
@@ -214,7 +205,7 @@ function Get-UniFiSites {
     )
 
     $uri      = "$($Session.BaseUrl)/api/self/sites"
-    $response = Invoke-UniFiRequest -Uri $uri -WebSession $Session.WebSession
+    $response = Invoke-UniFiRequest -Uri $uri -ApiKey $Session.ApiKey
 
     if ($response.meta.rc -ne 'ok') {
         throw "Failed to retrieve UniFi sites: $($response.meta.msg)"
@@ -253,7 +244,7 @@ function Get-UniFiAlerts {
         $uri = "$($Session.BaseUrl)/api/s/$siteId/stat/alarm"
 
         try {
-            $response = Invoke-UniFiRequest -Uri $uri -WebSession $Session.WebSession
+            $response = Invoke-UniFiRequest -Uri $uri -ApiKey $Session.ApiKey
 
             if ($response.meta.rc -ne 'ok') {
                 Write-Log -Level Warning -Message "Could not fetch alerts for site '$siteName': $($response.meta.msg)"

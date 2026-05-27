@@ -12,8 +12,7 @@ Datto RMM Scheduler (every 15 min)
         ▼
 Invoke-UniFiAlerts.ps1
         │
-        ├─ POST /api/login                         UniFi auth (cookie-based)
-        ├─ GET  /api/self/sites                    list all sites
+        ├─ GET  /api/self/sites                    list all sites (API key auth)
         ├─ GET  /api/s/{site_id}/stat/alarm        fetch unarchived alerts
         │
         ├─ Parse account prefix from site name
@@ -33,15 +32,32 @@ Invoke-UniFiAlerts.ps1
 | Requirement | Detail |
 |---|---|
 | Datto RMM | Account with Component Editor access |
-| UniFi Cloud Controller | Reachable from the target device's network |
+| UniFi Network Application | Version **8.1 or later** (for API key support) |
+| UniFi API key | Generated in the controller UI — no 2FA required |
 | AutoTask API user | Integration user with permission to read companies/contacts and create tickets |
 | Persistent folder | e.g. `C:\ProgramData\DattoRMM\UniFiAlerts\` on the target device |
 
+> **One controller, all sites.** Because all UniFi sites are managed from a single cloud controller, all configuration is set as **Job Variables** on the one scheduled job — not per-site. You only configure this once.
+
 ---
 
-## Quick start
+## Setup
 
-### 1 — Create the Component in Datto RMM
+### 1 — Generate a UniFi API key
+
+API keys bypass 2FA and do not expire with password changes.
+
+1. Log in to your UniFi Network Application (web UI)
+2. Go to **Settings → System → Advanced**
+3. Scroll to **API Keys** and click **Create API Key**
+4. Give it a descriptive name (e.g. `Datto RMM Alert Bridge`)
+5. Copy the key — you will not be able to see it again
+
+> **Requires UniFi Network Application 8.1+.** If your controller is older, update it before proceeding.
+
+---
+
+### 2 — Create the Component in Datto RMM
 
 1. Go to **Components → New Component**
 2. Name: `UniFi Alert to AutoTask Ticket`
@@ -51,21 +67,33 @@ Invoke-UniFiAlerts.ps1
 6. Paste the full contents of `Invoke-UniFiAlerts.ps1` into the script editor
 7. **Save** the component
 
-### 2 — Set Site Variables
+---
 
-Navigate to **Sites → [Your Site] → Variables** and add each variable below.
+### 3 — Create the Scheduled Job
 
-> **Security note:** Datto RMM Site Variables are encrypted at rest. Mark password/secret fields as the **Password** type in Datto RMM so they are masked in logs and the UI.
+1. Go to **Jobs → New Job**
+2. Job Type: `Component Job`
+3. Name: `UniFi Alert Polling`
+4. Component: `UniFi Alert to AutoTask Ticket`
+5. Target: always-on device that can reach the UniFi controller (Windows Server, NUC, or any device with the Datto RMM agent)
+6. Schedule: **Recurring — every 15 minutes**
+
+---
+
+### 4 — Set Job Variables
+
+All configuration lives on the job itself. In the job editor, go to the **Variables** tab and add each entry below.
+
+> **Security note:** Mark the `UNIFI_API_KEY` and `AT_SECRET` fields as the **Password** type so they are encrypted at rest and masked in job logs.
 
 | Variable | Example value | Notes |
 |---|---|---|
-| `UNIFI_BASE_URL` | `https://192.168.1.1:8443` | No trailing slash. For UniFi OS (UDM/Pro) omit the port. |
-| `UNIFI_USERNAME` | `admin` | Cloud Controller local admin username |
-| `UNIFI_PASSWORD` | `••••••••` | **Mark as password** |
-| `UNIFI_SITE_FILTER` | *(leave blank)* | Optional comma-separated site names to restrict polling. Blank = all sites. |
-| `AT_BASE_URL` | `https://webservices2.autotask.net/ATServicesRest` | Check your zone — log in to AutoTask and look at the URL |
+| `UNIFI_BASE_URL` | `https://192.168.1.1:8443` | No trailing slash. Omit `:8443` for UniFi OS (UDM/Pro). |
+| `UNIFI_API_KEY` | `••••••••` | **Mark as password.** Generated in step 1. |
+| `UNIFI_SITE_FILTER` | *(leave blank)* | Optional — comma-separated site display names to restrict polling. Blank = all sites. |
+| `AT_BASE_URL` | `https://webservices2.autotask.net/ATServicesRest` | Check your zone — see note below. |
 | `AT_USERNAME` | `api-integration@yourdomain.com` | AutoTask API integration user email |
-| `AT_SECRET` | `••••••••` | **Mark as password** |
+| `AT_SECRET` | `••••••••` | **Mark as password.** |
 | `AT_QUEUE_ID` | `29682933` | Admin → Service Desk → Queues |
 | `AT_SOURCE_ID` | `4` | Admin → Service Desk → Ticket Sources |
 | `AT_PRIORITY_ID` | `1` | Admin → Service Desk → Priority |
@@ -73,19 +101,13 @@ Navigate to **Sites → [Your Site] → Variables** and add each variable below.
 
 > **AutoTask zone:** your zone appears in the AutoTask URL — `webservices1`, `webservices2`, etc. Using the wrong zone causes silent API failures.
 
-> **Account number field:** By default the script searches AutoTask's `AccountNumber` field for the site prefix. If your instance stores this in a User Defined Field, update the filter in `Find-AutoTaskCompany` inside `#region AUTOTASK-LOOKUP`.
+> **Account number field:** By default the script searches AutoTask's `AccountNumber` field for the site prefix (e.g. `AFF001`). If your instance stores this in a User Defined Field instead, update the filter in `Find-AutoTaskCompany` inside `#region AUTOTASK-LOOKUP`.
 
-### 3 — Create the Scheduled Job
+**Save and enable the job.**
 
-1. Go to **Jobs → New Job**
-2. Job Type: `Component Job`
-3. Name: `UniFi Alert Polling – [Site Name]`
-4. Component: `UniFi Alert to AutoTask Ticket`
-5. Target: always-on device at the site (Windows Server, NUC, or any device with the Datto RMM agent that can reach the UniFi controller)
-6. Schedule: **Recurring — every 15 minutes**
-7. Enable and save
+---
 
-### 4 — Verify the first run
+### 5 — Verify the first run
 
 | Check | Where |
 |---|---|
@@ -102,17 +124,17 @@ Navigate to **Sites → [Your Site] → Variables** and add each variable below.
 | Code | Meaning |
 |---|---|
 | `0` | Completed successfully (some alerts may have been skipped — see stdout) |
-| `1` | Fatal startup failure — missing env var or UniFi auth failed |
+| `1` | Fatal startup failure — missing variable, or API key rejected |
 
 ---
 
 ## Test mode
 
-Run this before the live scheduler to verify connectivity and inspect the raw alert payload without creating any AutoTask tickets.
+Run this **before enabling the live scheduler** to verify connectivity and inspect the raw alert payload without creating any AutoTask tickets.
 
 ### In Datto RMM
 
-Create a one-off Component Job using the same component, then add script arguments in the job editor:
+Create a one-off Component Job run using the same component. In the **Script Arguments** field add:
 
 ```
 # Dump first alert from any site
@@ -122,7 +144,7 @@ Create a one-off Component Job using the same component, then add script argumen
 -TestMode -TestSite "AFF001_A1 Taxis"
 ```
 
-The full alert JSON will appear in the job stdout log:
+The full alert JSON appears in the job stdout log:
 
 ```
 === TEST MODE - RAW UNIFI ALERT (no ticket created) ===
@@ -143,7 +165,7 @@ Account prefix parsed: AFF001
 Use this to confirm:
 - `site_name` contains the expected `PREFIX_Description` format
 - Field names match what the script expects (`ap_name`, `sw_name`, etc.)
-- The account prefix extracts correctly
+- The account prefix extracts correctly before any tickets are created
 
 ---
 
@@ -194,19 +216,11 @@ To add a new code, add an entry to `$Script:AlertMap` and `$titleMap` inside `#r
 
 ---
 
-## Multi-site rollout
-
-Repeat the **Site Variables** step for each client site (each will have a different `UNIFI_BASE_URL`, username, and password), then create a separate scheduled job targeting an always-on device at each site. The script itself is identical across all sites.
-
-**Tip:** If `AT_BASE_URL`, `AT_USERNAME`, `AT_SECRET`, `AT_QUEUE_ID`, `AT_SOURCE_ID`, and `AT_PRIORITY_ID` are the same across all sites, set them at the **Account** level in Datto RMM rather than per-site. Only the UniFi variables need to vary.
-
----
-
 ## Edge cases
 
 | Scenario | Behaviour |
 |---|---|
-| UniFi login fails | Exit 1 — clear error in stdout |
+| API key rejected | Exit 1 — clear error in stdout |
 | Site name has no underscore | Warning logged, site skipped |
 | Account prefix not found in AutoTask | Warning logged, alert skipped — no orphan ticket |
 | AutoTask 429 rate limit | Exponential backoff, up to 3 retries |
@@ -231,10 +245,10 @@ Import-Module Pester
 Invoke-Pester ./Tests/ -Output Detailed
 
 # Run individual test files
-Invoke-Pester ./Tests/AccountParse.Tests.ps1  -Output Detailed
-Invoke-Pester ./Tests/AlertMap.Tests.ps1      -Output Detailed
-Invoke-Pester ./Tests/DedupLog.Tests.ps1      -Output Detailed
-Invoke-Pester ./Tests/TicketBody.Tests.ps1    -Output Detailed
+Invoke-Pester ./Tests/AccountParse.Tests.ps1   -Output Detailed
+Invoke-Pester ./Tests/AlertMap.Tests.ps1       -Output Detailed
+Invoke-Pester ./Tests/DedupLog.Tests.ps1       -Output Detailed
+Invoke-Pester ./Tests/TicketBody.Tests.ps1     -Output Detailed
 Invoke-Pester ./Tests/PrimaryContact.Tests.ps1 -Output Detailed
 ```
 
