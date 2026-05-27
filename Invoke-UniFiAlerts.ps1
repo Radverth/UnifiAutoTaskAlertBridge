@@ -69,6 +69,11 @@ $Script:DedupLogPath    = $env:DEDUP_LOG_PATH
 
 $Script:DedupRetentionDays = 7
 
+# Optional — set to enable two-way sync: archives the UniFi alert when its AutoTask
+# ticket reaches this status. Find the ID in AutoTask: Admin → Service Desk → Ticket Statuses.
+# Leave unset to disable the sync step entirely.
+$Script:AtClosedStatusId = if ($env:AT_CLOSED_STATUS_ID) { [int]$env:AT_CLOSED_STATUS_ID } else { $null }
+
 #endregion CONFIG
 
 # ---------------------------------------------------------------------------
@@ -256,8 +261,9 @@ function Get-UniFiAlerts {
             $siteAlerts = $response.data | Where-Object { $_.archived -eq $false }
 
             foreach ($alert in $siteAlerts) {
-                # Annotate with site display name for downstream processing
+                # Annotate with site display name and short site ID for downstream processing
                 $alert | Add-Member -MemberType NoteProperty -Name 'site_name' -Value $siteName -Force
+                $alert | Add-Member -MemberType NoteProperty -Name 'site_id'   -Value $siteId   -Force
             }
 
             Write-Log -Level Info -Message "Site '$siteName': $($siteAlerts.Count) unarchived alert(s)"
@@ -788,21 +794,13 @@ function Read-DedupLog {
     }
 }
 
-function Write-DedupLog {
+function Save-DedupLog {
     <#
     .SYNOPSIS
-        Appends a new entry to the deduplication log and saves it to disk.
+        Persists the current dedup log hashtable to disk without adding an entry.
+        Used after sync operations that remove entries.
     #>
-    param(
-        [hashtable]$Log,
-        [string]$AlertId,
-        [long]$TicketId
-    )
-
-    $Log[$AlertId] = @{
-        ticketId  = $TicketId
-        timestamp = (Get-Date -Format 'o')
-    }
+    param([hashtable]$Log)
 
     $logDir = Split-Path -Path $Script:DedupLogPath -Parent
     if ($logDir -and -not (Test-Path $logDir)) {
@@ -810,6 +808,28 @@ function Write-DedupLog {
     }
 
     $Log | ConvertTo-Json -Depth 5 | Set-Content -Path $Script:DedupLogPath -Encoding UTF8 -Force
+}
+
+function Write-DedupLog {
+    <#
+    .SYNOPSIS
+        Adds a new entry to the dedup log and saves it to disk.
+        SiteId is stored so the sync step can later archive the alert in UniFi.
+    #>
+    param(
+        [hashtable]$Log,
+        [string]$AlertId,
+        [long]$TicketId,
+        [string]$SiteId = ''
+    )
+
+    $Log[$AlertId] = @{
+        ticketId  = $TicketId
+        siteId    = $SiteId
+        timestamp = (Get-Date -Format 'o')
+    }
+
+    Save-DedupLog -Log $Log
 }
 
 function Remove-ExpiredDedupEntries {
@@ -868,6 +888,162 @@ function Test-AlreadyLogged {
 }
 
 #endregion DEDUP
+
+# ---------------------------------------------------------------------------
+#region SYNC
+# ---------------------------------------------------------------------------
+
+function Get-AutoTaskTicketStatus {
+    <#
+    .SYNOPSIS
+        Returns the AutoTask ticket's current Status integer.
+        Returns $null when the ticket no longer exists (404).
+        Throws on any other API error.
+    .OUTPUTS
+        [int] status ID, or $null if ticket not found.
+    #>
+    param([long]$TicketId)
+
+    $uri = "$($Script:AtBaseUrl)/v1.0/Tickets/$TicketId"
+
+    try {
+        $response = Invoke-AutoTaskRequest -Uri $uri -Method 'GET'
+        return [int]$response.item.status
+    }
+    catch {
+        $statusCode = $null
+        if ($_.Exception.Response) {
+            $statusCode = [int]$_.Exception.Response.StatusCode
+        }
+
+        if ($statusCode -eq 404) {
+            return $null  # Ticket deleted — signal caller to clean up
+        }
+
+        throw  # Unexpected error — let caller decide
+    }
+}
+
+function Invoke-UniFiArchiveAlert {
+    <#
+    .SYNOPSIS
+        Archives a single UniFi alert via the event manager command endpoint.
+        Treats "not found" responses as success — the alert is already gone.
+    #>
+    param(
+        [hashtable]$Session,
+        [string]$SiteId,
+        [string]$AlertId
+    )
+
+    $uri  = "$($Session.BaseUrl)/api/s/$SiteId/cmd/evtmgr"
+    $body = @{ cmd = 'archive-alarm'; _id = $AlertId }
+
+    try {
+        $response = Invoke-UniFiRequest -Uri $uri -Method 'POST' -Body $body -ApiKey $Session.ApiKey
+
+        if ($response.meta.rc -eq 'ok') { return }
+
+        # Some controllers return rc='ok' with empty data when the alert is already gone.
+        # Others return rc='error' with a "not found" message — treat both as success.
+        if ($response.meta.msg -match 'not found|Unknown|invalid') {
+            Write-Log -Level Info -Message "Alert $AlertId not found in UniFi (already archived or cleared) — skipping archive"
+            return
+        }
+
+        throw "UniFi controller returned error: $($response.meta.msg)"
+    }
+    catch [System.Net.WebException] {
+        $statusCode = $null
+        if ($_.Exception.Response) {
+            $statusCode = [int]$_.Exception.Response.StatusCode
+        }
+
+        if ($statusCode -eq 404) {
+            Write-Log -Level Info -Message "Alert $AlertId not found in UniFi (404) — already archived or cleared"
+            return  # Idempotent — not an error
+        }
+
+        throw
+    }
+}
+
+function Sync-ClosedTickets {
+    <#
+    .SYNOPSIS
+        Checks every entry in the dedup log against AutoTask. When a ticket has
+        reached the configured closed status, the corresponding UniFi alert is
+        archived and the dedup entry is removed.
+
+        Runs before new-alert processing on each poll so the controller stays clean.
+        One entry failure never blocks others — errors are logged and retried next run.
+
+    .OUTPUTS
+        The updated dedup log hashtable (some entries may have been removed).
+    #>
+    param(
+        [hashtable]$Log,
+        [hashtable]$Session
+    )
+
+    # Snapshot keys so we can safely remove entries mid-loop
+    $keys    = @($Log.Keys)
+    $removed = 0
+
+    foreach ($alertId in $keys) {
+        $entry    = $Log[$alertId]
+        $ticketId = $entry.ticketId
+        $siteId   = $entry.siteId   # May be null/empty for entries written before this update
+
+        try {
+            $status = Get-AutoTaskTicketStatus -TicketId $ticketId
+
+            # ── Ticket deleted from AutoTask ──────────────────────────────
+            if ($null -eq $status) {
+                Write-Log -Level Warning -Message "Ticket $ticketId no longer exists in AutoTask — removing dedup entry for alert $alertId without archiving"
+                $Log.Remove($alertId)
+                $removed++
+                continue
+            }
+
+            # ── Ticket still open ─────────────────────────────────────────
+            if ($status -ne $Script:AtClosedStatusId) { continue }
+
+            # ── Ticket is closed — archive the UniFi alert ────────────────
+            if ($siteId) {
+                try {
+                    Invoke-UniFiArchiveAlert -Session $Session -SiteId $siteId -AlertId $alertId
+                    Write-Log -Level Info -Message "Archived UniFi alert $alertId (ticket $ticketId closed)"
+                }
+                catch {
+                    # Archive failed — keep in dedup log and retry next run
+                    Write-Log -Level Warning -Message "Could not archive alert $alertId in UniFi: $_ — will retry next run"
+                    continue
+                }
+            }
+            else {
+                # Entry predates siteId storage — ticket closed but we cannot archive.
+                # Remove from log so it doesn't clutter future runs.
+                Write-Log -Level Info -Message "Ticket $ticketId closed — removing dedup entry for alert $alertId (no siteId stored; archive in UniFi manually)"
+            }
+
+            $Log.Remove($alertId)
+            $removed++
+        }
+        catch {
+            # Non-fatal: one failed status check should never block other entries
+            Write-Log -Level Warning -Message "Could not check status of ticket $ticketId for alert $alertId: $_ — will retry next run"
+        }
+    }
+
+    if ($removed -gt 0) {
+        Write-Log -Level Info -Message "Sync complete — $removed ticket(s) closed; dedup log updated"
+    }
+
+    return $Log
+}
+
+#endregion SYNC
 
 # ---------------------------------------------------------------------------
 #region MAIN
@@ -937,6 +1113,13 @@ try {
     $dedupLog = Read-DedupLog
     $dedupLog = Remove-ExpiredDedupEntries -Log $dedupLog
 
+    # ── Two-way sync — archive UniFi alerts for closed AutoTask tickets ───
+    if ($Script:AtClosedStatusId) {
+        Write-Log -Level Info -Message "Two-way sync enabled (closed status ID: $($Script:AtClosedStatusId)) — checking for resolved tickets..."
+        $dedupLog = Sync-ClosedTickets -Log $dedupLog -Session $session
+        Save-DedupLog -Log $dedupLog
+    }
+
     $ticketsCreated = 0
     $alertsSkipped  = 0
 
@@ -973,8 +1156,8 @@ try {
                 continue
             }
 
-            # 6 — Record in dedup log
-            Write-DedupLog -Log $dedupLog -AlertId $alertId -TicketId $ticketId
+            # 6 — Record in dedup log (store siteId so sync can archive alert later)
+            Write-DedupLog -Log $dedupLog -AlertId $alertId -TicketId $ticketId -SiteId $alert.site_id
             $ticketsCreated++
         }
         catch {

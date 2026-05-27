@@ -98,6 +98,7 @@ All configuration lives on the job itself. In the job editor, go to the **Variab
 | `AT_QUEUE_ID` | `29682933` | Admin → Service Desk → Queues |
 | `AT_SOURCE_ID` | `4` | Admin → Service Desk → Ticket Sources |
 | `AT_PRIORITY_ID` | `1` | Admin → Service Desk → Priority |
+| `AT_CLOSED_STATUS_ID` | `5` | **Optional.** Enables two-way sync — see section below. Admin → Service Desk → Ticket Statuses. |
 | `DEDUP_LOG_PATH` | `C:\ProgramData\DattoRMM\UniFiAlerts\dedup.json` | Must be a persistent path; folder is created automatically |
 
 > **AutoTask zone:** your zone appears in the AutoTask URL — `webservices1`, `webservices2`, etc. Using the wrong zone causes silent API failures.
@@ -117,6 +118,48 @@ All configuration lives on the job itself. In the job editor, go to the **Variab
 | Ticket created | AutoTask → company ticket queue |
 | Dedup log created | RDP to target → confirm `dedup.json` at `DEDUP_LOG_PATH` |
 | No duplicates on second run | Wait for next scheduled run |
+
+---
+
+## Two-way sync — closing tickets archives alerts
+
+When `AT_CLOSED_STATUS_ID` is set, each polling run checks every open dedup log entry against AutoTask before processing new alerts. If the ticket has reached the configured closed status, the corresponding UniFi alert is archived via the controller API so it disappears from future polls.
+
+### How it works
+
+```
+Each polling run (before new-alert processing):
+  for each entry in dedup.json:
+    GET /v1.0/Tickets/{id}          check ticket status in AutoTask
+    if status == AT_CLOSED_STATUS_ID:
+      POST /api/s/{siteId}/cmd/evtmgr  archive the alert in UniFi
+      remove entry from dedup.json
+```
+
+The dedup log stores the UniFi site ID alongside every ticket ID so the archive call can be made without re-fetching site data.
+
+### Enabling it
+
+Add `AT_CLOSED_STATUS_ID` as a Job Variable (see the variables table above). Set it to the numeric ID of your "Complete" or equivalent status.
+
+To find the right ID: Admin → Service Desk → Ticket Statuses. The most common value is `5` (Complete), but this varies per AutoTask instance.
+
+### Behaviour table
+
+| Scenario | What happens |
+|---|---|
+| Ticket closed, alert still in UniFi | Alert archived; dedup entry removed |
+| Ticket closed, alert already manually archived | Archive call treated as success; dedup entry removed |
+| Ticket closed, alert not found in UniFi (404) | Treated as already archived; dedup entry removed |
+| Archive call fails (network/controller error) | Warning logged; dedup entry kept; retried next run |
+| Ticket deleted from AutoTask (404) | Warning logged; dedup entry removed without archiving |
+| Ticket still open | No action; checked again next run |
+| Entry from before this update (no siteId stored) | Ticket closure noted; dedup entry removed; manual archive note logged |
+| `AT_CLOSED_STATUS_ID` not set | Sync step skipped entirely |
+
+> **Note on latency:** the sync runs every 15 minutes (or whatever your job schedule is). Closing a ticket in AutoTask won't archive the UniFi alert instantly — it will be picked up on the next scheduled run.
+
+> **Archiving vs resolving:** archiving a UniFi alert removes it from the active alerts view in the controller. It does not delete it — it moves to the alert history. This is the same action a technician would take manually when the issue is resolved.
 
 ---
 
@@ -231,6 +274,10 @@ To add a new code, add an entry to `$Script:AlertMap` and `$titleMap` inside `#r
 | No primary contact in AutoTask | `ContactID` omitted from ticket; manual assignment note in description |
 | Unknown UniFi event code | Fallback description `Unknown event: {raw code}` in WHAT HAPPENED |
 | Ticket creation fails | Error logged with response body; dedup entry NOT written (retries next run) |
+| AT_CLOSED_STATUS_ID not set | Sync step skipped; alerts remain unarchived until manually cleared |
+| AutoTask ticket status check fails | Warning logged; entry kept in dedup log; retried next run |
+| UniFi archive call fails | Warning logged; entry kept in dedup log; retried next run |
+| Ticket deleted from AutoTask | Warning logged; dedup entry removed; alert not archived in UniFi |
 
 ---
 
@@ -276,7 +323,7 @@ UnifiAutoTaskAlertBridge/
 
 - **Severity mapping** — map UniFi alert subsystem values to AutoTask priority IDs dynamically
 - **Alert archiving** — archive the UniFi alert after successful ticket creation
-- **Two-way sync** — check resolved AutoTask tickets and archive the corresponding UniFi alert
+- **Two-way sync** — ✅ implemented (see `AT_CLOSED_STATUS_ID`)
 - **Teams webhook** — post newly created ticket summaries to a Microsoft Teams channel
 - **Email fallback** — if company not found in AutoTask, email the alert to a catch-all queue
 - **Config file mode** — replace env vars with a JSON config for non-Datto deployments
