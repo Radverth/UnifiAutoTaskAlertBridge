@@ -74,6 +74,10 @@ $Script:DedupRetentionDays = 7
 # Leave unset to disable the sync step entirely.
 $Script:AtClosedStatusId = if ($env:AT_CLOSED_STATUS_ID) { [int]$env:AT_CLOSED_STATUS_ID } else { $null }
 
+# Maximum age of alerts to process. Alerts older than this are silently skipped so
+# a backlog of stale unarchived alerts on the first run does not flood AutoTask.
+$Script:AlertMaxAgeHours = if ($env:ALERT_MAX_AGE_HOURS) { [int]$env:ALERT_MAX_AGE_HOURS } else { 24 }
+
 #endregion CONFIG
 
 # ---------------------------------------------------------------------------
@@ -258,15 +262,37 @@ function Get-UniFiAlerts {
                 continue
             }
 
-            $siteAlerts = $response.data | Where-Object { $_.archived -eq $false }
+            $cutoff     = (Get-Date).ToUniversalTime().AddHours(-$Script:AlertMaxAgeHours)
+            $siteAlerts = @()
+            $tooOld     = 0
 
-            foreach ($alert in $siteAlerts) {
+            foreach ($alert in ($response.data | Where-Object { $_.archived -eq $false })) {
+                # Age filter — skip alerts older than AlertMaxAgeHours
+                if ($alert.datetime) {
+                    try {
+                        $alertTime = [datetime]::Parse(
+                            $alert.datetime, $null,
+                            [System.Globalization.DateTimeStyles]::RoundtripKind
+                        ).ToUniversalTime()
+
+                        if ($alertTime -lt $cutoff) { $tooOld++; continue }
+                    }
+                    catch {
+                        # Unparseable datetime — include the alert rather than silently drop it
+                        Write-Log -Level Warning -Message "Could not parse datetime '$($alert.datetime)' for alert $($alert._id) — including anyway"
+                    }
+                }
+
                 # Annotate with site display name and short site ID for downstream processing
                 $alert | Add-Member -MemberType NoteProperty -Name 'site_name' -Value $siteName -Force
                 $alert | Add-Member -MemberType NoteProperty -Name 'site_id'   -Value $siteId   -Force
+                $siteAlerts += $alert
             }
 
-            Write-Log -Level Info -Message "Site '$siteName': $($siteAlerts.Count) unarchived alert(s)"
+            if ($tooOld -gt 0) {
+                Write-Log -Level Info -Message "Site '$siteName': skipped $tooOld alert(s) older than $($Script:AlertMaxAgeHours) hour(s)"
+            }
+            Write-Log -Level Info -Message "Site '$siteName': $($siteAlerts.Count) unarchived alert(s) within age limit"
             $allAlerts += $siteAlerts
         }
         catch {

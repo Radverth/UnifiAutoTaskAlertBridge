@@ -99,6 +99,7 @@ All configuration lives on the job itself. In the job editor, go to the **Variab
 | `AT_SOURCE_ID` | `4` | Admin → Service Desk → Ticket Sources |
 | `AT_PRIORITY_ID` | `1` | Admin → Service Desk → Priority |
 | `AT_CLOSED_STATUS_ID` | `5` | **Optional.** Enables two-way sync — see section below. Admin → Service Desk → Ticket Statuses. |
+| `ALERT_MAX_AGE_HOURS` | `24` | **Optional.** Alerts older than this many hours are skipped. Prevents a backlog of stale alerts creating tickets on first run. Default: 24. |
 | `DEDUP_LOG_PATH` | `C:\ProgramData\DattoRMM\UniFiAlerts\dedup.json` | Must be a persistent path; folder is created automatically |
 
 > **AutoTask zone:** your zone appears in the AutoTask URL — `webservices1`, `webservices2`, etc. Using the wrong zone causes silent API failures.
@@ -268,6 +269,7 @@ To add a new code, add an entry to `$Script:AlertMap` and `$titleMap` inside `#r
 | Site name has no underscore | Warning logged, site skipped |
 | Account prefix not found in AutoTask | Warning logged, alert skipped — no orphan ticket |
 | AutoTask 429 rate limit | Exponential backoff, up to 3 retries |
+| Alert older than `ALERT_MAX_AGE_HOURS` | Skipped silently (count logged per site) |
 | Alert already in dedup log | Skipped silently |
 | Dedup log missing or corrupt | Recreated empty, processing continues |
 | Alert has no device name | MAC address used as fallback in ticket title |
