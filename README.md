@@ -84,7 +84,7 @@ API keys bypass 2FA and do not expire with password changes.
 
 All configuration lives on the job itself. In the job editor, go to the **Variables** tab and add each entry below.
 
-> **Security note:** Mark the `UNIFI_API_KEY` and `AT_SECRET` fields as the **Password** type so they are encrypted at rest and masked in job logs.
+> **Security note:** Mark the `UNIFI_API_KEY` and `AT_API_KEY` fields as the **Password** type so they are encrypted at rest and masked in job logs.
 
 | Variable | Example value | Notes |
 |---|---|---|
@@ -92,8 +92,9 @@ All configuration lives on the job itself. In the job editor, go to the **Variab
 | `UNIFI_API_KEY` | `••••••••` | **Mark as password.** Generated in step 1. |
 | `UNIFI_SITE_FILTER` | *(leave blank)* | Optional — comma-separated site display names to restrict polling. Blank = all sites. |
 | `AT_BASE_URL` | `https://webservices2.autotask.net/ATServicesRest` | Check your zone — see note below. |
-| `AT_USERNAME` | `api-integration@yourdomain.com` | AutoTask API integration user email |
-| `AT_SECRET` | `••••••••` | **Mark as password.** |
+| `AT_INTEGRATION_CODE` | `DattoRMM-UniFiAlertBridge` | Unique identifier for this integration — Admin → Resources / Users (HR) → API Tracking Identifier |
+| `AT_USERNAME` | `api-integration@yourdomain.com` | AutoTask API user email |
+| `AT_API_KEY` | `••••••••` | **Mark as password.** AutoTask API key — Admin → Resources / Users (HR) → [API User] → API Access |
 | `AT_QUEUE_ID` | `29682933` | Admin → Service Desk → Queues |
 | `AT_SOURCE_ID` | `4` | Admin → Service Desk → Ticket Sources |
 | `AT_PRIORITY_ID` | `1` | Admin → Service Desk → Priority |

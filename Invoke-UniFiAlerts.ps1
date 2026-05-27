@@ -44,8 +44,9 @@ $Script:RequiredEnvVars = @(
     'UNIFI_BASE_URL',
     'UNIFI_API_KEY',
     'AT_BASE_URL',
+    'AT_INTEGRATION_CODE',
     'AT_USERNAME',
-    'AT_SECRET',
+    'AT_API_KEY',
     'AT_QUEUE_ID',
     'AT_SOURCE_ID',
     'AT_PRIORITY_ID',
@@ -57,9 +58,10 @@ $Script:UniFiApiKey     = $env:UNIFI_API_KEY
 $Script:UniFiSiteFilter = if ($env:UNIFI_SITE_FILTER) {
     $env:UNIFI_SITE_FILTER -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
 } else { @() }
-$Script:AtBaseUrl       = $env:AT_BASE_URL
-$Script:AtUsername      = $env:AT_USERNAME
-$Script:AtSecret        = $env:AT_SECRET
+$Script:AtBaseUrl          = $env:AT_BASE_URL
+$Script:AtIntegrationCode  = $env:AT_INTEGRATION_CODE
+$Script:AtUsername         = $env:AT_USERNAME
+$Script:AtApiKey           = $env:AT_API_KEY
 $Script:AtQueueId       = $env:AT_QUEUE_ID
 $Script:AtSourceId      = $env:AT_SOURCE_ID
 $Script:AtPriorityId    = $env:AT_PRIORITY_ID
@@ -314,13 +316,14 @@ function Get-AccountPrefix {
 function Get-AutoTaskAuthHeaders {
     <#
     .SYNOPSIS
-        Builds the Authorization header for AutoTask REST API calls.
+        Builds the native AutoTask REST API authentication headers.
+        Uses ApiIntegrationCode + UserName + Secret (not Basic auth).
     #>
-    $pair    = "$($Script:AtUsername):$($Script:AtSecret)"
-    $encoded = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($pair))
     return @{
-        Authorization = "Basic $encoded"
-        'Content-Type' = 'application/json'
+        ApiIntegrationCode = $Script:AtIntegrationCode
+        UserName           = $Script:AtUsername
+        Secret             = $Script:AtApiKey
+        'Content-Type'     = 'application/json'
     }
 }
 
