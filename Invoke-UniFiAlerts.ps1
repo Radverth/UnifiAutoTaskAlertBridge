@@ -301,7 +301,8 @@ function Get-UniFiHost {
     )
 
     try {
-        $response = Invoke-UniFiRequest -Endpoint "/hosts/$HostId"
+        $encodedHostId = [System.Uri]::EscapeDataString($HostId)
+        $response = Invoke-UniFiRequest -Endpoint "/hosts/$encodedHostId"
         # Response may be the host object directly or wrapped in a data property
         $host = if ($response.data) { $response.data } else { $response }
         # Primary: reportedState.name is the human-readable console name
