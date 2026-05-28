@@ -634,15 +634,25 @@ function Invoke-AlertEvaluation {
     # Collect offline devices up front so Alert 1 and Alert 8 can share the list
     $offlineDevices = @($Devices | Where-Object { $_.status -eq 'offline' })
 
+    # Use the statistics count as the authoritative offline count — it includes devices the
+    # API may not have returned in the device list (e.g. unpaginated results). Fall back to
+    # the device list count only when statistics are unavailable.
+    $effectiveOfflineCount = if ($counts -and $null -ne $counts.offlineDevice) { [int]$counts.offlineDevice } else { $offlineDevices.Count }
+
     # Per-device alerts
     foreach ($device in $Devices) {
         $deviceName = if ($device.name)  { $device.name }
                       elseif ($device.model) { $device.model }
                       else { 'Unknown Device' }
 
-        # Alert 1: Device Offline — only raised individually when just one device is offline.
+        # Log shortname to help diagnose FirmwareExclusions key mismatches
+        if ($device.shortname) {
+            Write-Host "[DEBUG] Device '$deviceName' shortname='$($device.shortname)' version='$($device.version)' firmwareStatus='$($device.firmwareStatus)'" -ForegroundColor DarkGray
+        }
+
+        # Alert 1: Device Offline — only raised individually when exactly one device is offline.
         # When multiple devices are offline the consolidated Alert 8 covers them all.
-        if ($device.status -eq 'offline' -and $offlineDevices.Count -eq 1) {
+        if ($device.status -eq 'offline' -and $effectiveOfflineCount -eq 1) {
             $alerts.Add([pscustomobject]@{
                 AlertType  = 'DeviceOffline'
                 Priority   = 'Critical'
@@ -765,9 +775,7 @@ function Invoke-AlertEvaluation {
     }
 
     # Alert 8: Multiple Devices Offline
-    # Use the local offline device list when available; fall back to the statistics count.
-    $multiOfflineCount = if ($offlineDevices.Count -gt 0) { $offlineDevices.Count } else { $offlineCount }
-    if ($multiOfflineCount -gt 1) {
+    if ($effectiveOfflineCount -gt 1) {
         # Build a device name list from the devices we actually enumerated
         $offlineNameList = if ($offlineDevices.Count -gt 0) {
             ($offlineDevices | ForEach-Object {
