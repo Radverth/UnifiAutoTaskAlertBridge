@@ -16,7 +16,7 @@ param(
     [switch]$CheckDeps
 )
 
-Set-StrictMode -Version Latest
+Set-StrictMode -Version 1
 $ErrorActionPreference = 'Continue'
 
 #region CONFIGURATION
@@ -479,18 +479,27 @@ function Invoke-AlertEvaluation {
     )
 
     $alerts = [System.Collections.Generic.List[object]]::new()
-    $siteName = if ($Site.name) { $Site.name } else { 'Unknown Site' }
 
-    # Count offline and gateway devices for multi-device checks
-    $offlineDevices  = @($Devices | Where-Object { $_.status -eq 'offline' })
-    $gatewayDevices  = @($Devices | Where-Object {
-        $_.type -eq 'gateway' -or $_.type -eq 'ugw' -or $_.type -eq 'udm' -or
-        $_.type -eq 'udr' -or $_.isGateway -eq $true
-    })
+    # Site name lives in meta.desc (human label) or meta.name (internal slug)
+    $siteName = 'Unknown Site'
+    if ($Site.meta -and $Site.meta.desc)  { $siteName = $Site.meta.desc }
+    elseif ($Site.meta -and $Site.meta.name) { $siteName = $Site.meta.name }
+
+    # Shortcut to the statistics sub-objects
+    $stats    = if ($Site.statistics)              { $Site.statistics }              else { $null }
+    $counts   = if ($stats -and $stats.counts)     { $stats.counts }                 else { $null }
+    $pct      = if ($stats -and $stats.percentages){ $stats.percentages }            else { $null }
+    $ispInfo  = if ($stats -and $stats.ispInfo)    { $stats.ispInfo }                else { $null }
+
+    # Counts used for site-level multi-device alerts (from statistics, not device list)
+    $offlineCount  = if ($counts -and $null -ne $counts.offlineDevice)  { [int]$counts.offlineDevice }  else { ($Devices | Where-Object { $_.status -eq 'offline' }).Count }
+    $gatewayCount  = if ($counts -and $null -ne $counts.gatewayDevice)  { [int]$counts.gatewayDevice }  else { ($Devices | Where-Object { $_.isConsole -eq $true }).Count }
 
     # Per-device alerts
     foreach ($device in $Devices) {
-        $deviceName = if ($device.name) { $device.name } elseif ($device.model) { $device.model } else { 'Unknown Device' }
+        $deviceName = if ($device.name)  { $device.name }
+                      elseif ($device.model) { $device.model }
+                      else { 'Unknown Device' }
 
         # Alert 1: Device Offline
         if ($device.status -eq 'offline') {
@@ -517,54 +526,40 @@ function Invoke-AlertEvaluation {
                 SiteData   = $Site
             })
         }
+    }
 
-        # Alert 3 & 4: TX Retry Rate
-        $txRetryRate = $null
-        if ($null -ne $device.txRetryRate) {
-            $txRetryRate = [double]$device.txRetryRate
+    # Alerts 3 & 4: TX Retry Rate — from site statistics.percentages.txRetry
+    $txRetryRate = if ($pct -and $null -ne $pct.txRetry) { [double]$pct.txRetry } else { $null }
+
+    if ($null -ne $txRetryRate) {
+        $rateRounded = [math]::Round($txRetryRate, 1)
+
+        if ($txRetryRate -gt $Config.TxRetryCriticalPct) {
+            $alerts.Add([pscustomobject]@{
+                AlertType  = 'TxRetryCritical'
+                Priority   = 'Critical'
+                Title      = "NETWORK CRITICAL -- ${siteName}: Critical WAN retry rate (${rateRounded}%)"
+                SiteName   = $siteName
+                DeviceName = 'N/A'
+                DeviceData = $null
+                SiteData   = $Site
+            })
         }
-        elseif ($null -ne $device.statistics -and $null -ne $device.statistics.txRetryRate) {
-            $txRetryRate = [double]$device.statistics.txRetryRate
-        }
-
-        if ($null -ne $txRetryRate) {
-            $rateRounded = [math]::Round($txRetryRate, 1)
-
-            if ($txRetryRate -gt $Config.TxRetryCriticalPct) {
-                $alerts.Add([pscustomobject]@{
-                    AlertType  = 'TxRetryCritical'
-                    Priority   = 'Critical'
-                    Title      = "NETWORK CRITICAL -- ${siteName}: Critical WAN retry rate (${rateRounded}%)"
-                    SiteName   = $siteName
-                    DeviceName = $deviceName
-                    DeviceData = $device
-                    SiteData   = $Site
-                })
-            }
-            elseif ($txRetryRate -gt $Config.TxRetryWarningPct) {
-                $alerts.Add([pscustomobject]@{
-                    AlertType  = 'TxRetryWarning'
-                    Priority   = 'Medium'
-                    Title      = "NETWORK DEGRADED -- ${siteName}: Elevated WAN retry rate (${rateRounded}%)"
-                    SiteName   = $siteName
-                    DeviceName = $deviceName
-                    DeviceData = $device
-                    SiteData   = $Site
-                })
-            }
+        elseif ($txRetryRate -gt $Config.TxRetryWarningPct) {
+            $alerts.Add([pscustomobject]@{
+                AlertType  = 'TxRetryWarning'
+                Priority   = 'Medium'
+                Title      = "NETWORK DEGRADED -- ${siteName}: Elevated WAN retry rate (${rateRounded}%)"
+                SiteName   = $siteName
+                DeviceName = 'N/A'
+                DeviceData = $null
+                SiteData   = $Site
+            })
         }
     }
 
-    # Site-level alerts
-
-    # Alert 5: WAN Uptime Degraded
-    $wanUptime = $null
-    if ($null -ne $Site.wanUptime) {
-        $wanUptime = [double]$Site.wanUptime
-    }
-    elseif ($null -ne $Site.statistics -and $null -ne $Site.statistics.wanUptime) {
-        $wanUptime = [double]$Site.statistics.wanUptime
-    }
+    # Alert 5: WAN Uptime Degraded — from site statistics.percentages.wanUptime
+    $wanUptime = if ($pct -and $null -ne $pct.wanUptime) { [double]$pct.wanUptime } else { $null }
 
     if ($null -ne $wanUptime -and $wanUptime -lt $Config.WanUptimeWarningPct) {
         $uptimeRounded = [math]::Round($wanUptime, 2)
@@ -579,19 +574,8 @@ function Invoke-AlertEvaluation {
         })
     }
 
-    # Alert 6: Critical Notifications Present
-    $criticalNotifCount = $null
-    if ($null -ne $Site.criticalNotifications) {
-        if ($Site.criticalNotifications -is [array]) {
-            $criticalNotifCount = $Site.criticalNotifications.Count
-        }
-        elseif ($Site.criticalNotifications -is [int] -or $Site.criticalNotifications -is [long]) {
-            $criticalNotifCount = [int]$Site.criticalNotifications
-        }
-    }
-    elseif ($null -ne $Site.statistics -and $null -ne $Site.statistics.criticalNotifications) {
-        $criticalNotifCount = [int]$Site.statistics.criticalNotifications
-    }
+    # Alert 6: Critical Notifications — from site statistics.counts.criticalNotification
+    $criticalNotifCount = if ($counts -and $null -ne $counts.criticalNotification) { [int]$counts.criticalNotification } else { $null }
 
     if ($null -ne $criticalNotifCount -and $criticalNotifCount -gt 0) {
         $alerts.Add([pscustomobject]@{
@@ -605,25 +589,10 @@ function Invoke-AlertEvaluation {
         })
     }
 
-    # Alert 7: Internet Issues Detected
-    $internetIssues = $null
-    if ($null -ne $Site.internetIssues) {
-        $internetIssues = $Site.internetIssues
-    }
-    elseif ($null -ne $Site.statistics -and $null -ne $Site.statistics.internetIssues) {
-        $internetIssues = $Site.statistics.internetIssues
-    }
-
-    $hasInternetIssues = $false
-    if ($internetIssues -is [array] -and $internetIssues.Count -gt 0) {
-        $hasInternetIssues = $true
-    }
-    elseif ($internetIssues -is [string] -and -not [string]::IsNullOrWhiteSpace($internetIssues)) {
-        $hasInternetIssues = $true
-    }
-    elseif ($internetIssues -is [bool] -and $internetIssues) {
-        $hasInternetIssues = $true
-    }
+    # Alert 7: Internet Issues — from site statistics.internetIssues (array)
+    $internetIssues = if ($stats -and $stats.internetIssues) { $stats.internetIssues } else { $null }
+    $hasInternetIssues = ($internetIssues -is [array] -and $internetIssues.Count -gt 0) -or
+                         ($internetIssues -is [bool] -and $internetIssues)
 
     if ($hasInternetIssues) {
         $alerts.Add([pscustomobject]@{
@@ -637,13 +606,12 @@ function Invoke-AlertEvaluation {
         })
     }
 
-    # Alert 8: Multiple Devices Offline
-    if ($offlineDevices.Count -gt 1) {
-        $count = $offlineDevices.Count
+    # Alert 8: Multiple Devices Offline — from statistics.counts.offlineDevice
+    if ($offlineCount -gt 1) {
         $alerts.Add([pscustomobject]@{
             AlertType  = 'MultipleDevicesOffline'
             Priority   = 'Critical'
-            Title      = "NETWORK OUTAGE -- ${siteName}: ${count} devices offline simultaneously"
+            Title      = "NETWORK OUTAGE -- ${siteName}: ${offlineCount} devices offline simultaneously"
             SiteName   = $siteName
             DeviceName = 'Multiple'
             DeviceData = $null
@@ -651,8 +619,9 @@ function Invoke-AlertEvaluation {
         })
     }
 
-    # Alert 9: No Gateway Device
-    if ($Devices.Count -gt 0 -and $gatewayDevices.Count -eq 0) {
+    # Alert 9: No Gateway Device — from statistics.counts.gatewayDevice
+    $totalDeviceCount = if ($counts -and $null -ne $counts.totalDevice) { [int]$counts.totalDevice } else { $Devices.Count }
+    if ($totalDeviceCount -gt 0 -and $gatewayCount -eq 0) {
         $alerts.Add([pscustomobject]@{
             AlertType  = 'NoGatewayDevice'
             Priority   = 'Critical'
@@ -764,41 +733,31 @@ function Build-TicketDescription {
     $ts      = (Get-Date).ToString('yyyy-MM-ddTHH:mm:sszzz')
 
     # Device details
-    $devName     = if ($device) { Get-SafeValue $device 'name' }     else { 'N/A' }
-    $devMac      = if ($device) { Get-SafeValue $device 'mac' }      else { 'N/A' }
-    $devIp       = if ($device) { Get-SafeValue $device 'ip' }       else { 'N/A' }
-    $devModel    = if ($device) { Get-SafeValue $device 'model' }    else { 'N/A' }
-    $devFirmware = if ($device) { Get-SafeValue $device 'version' }  else { 'N/A' }
-    $devHostId   = if ($device) { Get-SafeValue $device 'hostId' }   else { 'N/A' }
+    $devName     = if ($device) { Get-SafeValue $device 'name' }    else { 'N/A' }
+    $devMac      = if ($device) { Get-SafeValue $device 'mac' }     else { 'N/A' }
+    $devIp       = if ($device) { Get-SafeValue $device 'ip' }      else { 'N/A' }
+    $devModel    = if ($device) { Get-SafeValue $device 'model' }   else { 'N/A' }
+    $devFirmware = if ($device) { Get-SafeValue $device 'version' } else { 'N/A' }
 
-    if ($devFirmware -eq 'N/A' -and $device -and $device.firmwareVersion) {
-        $devFirmware = $device.firmwareVersion
-    }
+    # Navigate the actual API response structure: site.statistics.{percentages,ispInfo,counts,wans,internetIssues}
+    $stats      = if ($site -and $site.statistics)                   { $site.statistics }                   else { $null }
+    $pct        = if ($stats -and $stats.percentages)                { $stats.percentages }                 else { $null }
+    $ispInfo    = if ($stats -and $stats.ispInfo)                    { $stats.ispInfo }                     else { $null }
+    $counts     = if ($stats -and $stats.counts)                     { $stats.counts }                      else { $null }
+    $wansObj    = if ($stats -and $stats.wans -and $stats.wans.WAN)  { $stats.wans.WAN }                    else { $null }
 
-    # Network context — try both top-level and nested statistics
-    $stats = $null
-    if ($site -and $site.statistics) { $stats = $site.statistics }
+    $wanUptime  = if ($pct -and $null -ne $pct.wanUptime)   { "$([math]::Round([double]$pct.wanUptime, 2))" }   else { 'N/A' }
+    $txRetry    = if ($pct -and $null -ne $pct.txRetry)     { "$([math]::Round([double]$pct.txRetry, 2))" }     else { 'N/A' }
+    $ispName    = if ($ispInfo -and $ispInfo.name)           { $ispInfo.name }                                   else { 'N/A' }
+    $ispAsn     = if ($ispInfo -and $null -ne $ispInfo.asn)  { $ispInfo.asn.ToString() }                        else { 'N/A' }
+    $externalIp = if ($wansObj -and $wansObj.externalIp)    { $wansObj.externalIp }                            else { 'N/A' }
 
-    $wanUptime   = if ($site -and $null -ne $site.wanUptime)   { "$([math]::Round([double]$site.wanUptime, 2))" }
-                   elseif ($stats -and $null -ne $stats.wanUptime) { "$([math]::Round([double]$stats.wanUptime, 2))" }
-                   else { 'N/A' }
+    # Client counts from statistics.counts.wiredClient / wifiClient
+    $wiredClients = if ($counts -and $null -ne $counts.wiredClient)   { $counts.wiredClient.ToString() } else { 'N/A' }
+    $wifiClients  = if ($counts -and $null -ne $counts.wifiClient)    { $counts.wifiClient.ToString() }  else { 'N/A' }
 
-    $txRetry     = if ($device -and $null -ne $device.txRetryRate) { "$([math]::Round([double]$device.txRetryRate, 2))" }
-                   elseif ($device -and $device.statistics -and $null -ne $device.statistics.txRetryRate) { "$([math]::Round([double]$device.statistics.txRetryRate, 2))" }
-                   else { 'N/A' }
-
-    $ispName     = if ($site)  { Get-SafeValue $site  'ispName' }    else { 'N/A' }
-    $ispAsn      = if ($site)  { Get-SafeValue $site  'ispAsn' }     else { 'N/A' }
-    $externalIp  = if ($site)  { Get-SafeValue $site  'wanIp' }      else { 'N/A' }
-
-    if ($ispName -eq 'N/A' -and $stats)    { $ispName    = Get-SafeValue $stats 'ispName' }
-    if ($ispAsn -eq 'N/A' -and $stats)     { $ispAsn     = Get-SafeValue $stats 'ispAsn' }
-    if ($externalIp -eq 'N/A' -and $stats) { $externalIp = Get-SafeValue $stats 'wanIp' }
-
-    $wiredClients = if ($site) { Get-SafeValue $site 'wiredClients' }  else { 'N/A' }
-    $wifiClients  = if ($site) { Get-SafeValue $site 'wifiClients' }   else { 'N/A' }
-    if ($wiredClients -eq 'N/A' -and $stats) { $wiredClients = Get-SafeValue $stats 'wiredClients' }
-    if ($wifiClients -eq 'N/A' -and $stats)  { $wifiClients  = Get-SafeValue $stats 'wifiClients' }
+    # Host ID for the device details block comes from the site (devices don't carry hostId)
+    $siteHostId = if ($site -and $site.hostId) { $site.hostId } else { 'N/A' }
 
     $mitigationSteps = Get-MitigationSteps -AlertType $Alert.AlertType
 
@@ -828,7 +787,7 @@ IP Address    : $devIp
 Model         : $devModel
 Firmware      : $devFirmware
 Site Name     : $($Alert.SiteName)
-Host ID       : $devHostId
+Host ID       : $siteHostId
 
 NETWORK CONTEXT
 ===============
@@ -1048,7 +1007,7 @@ function Invoke-Main {
 
     foreach ($site in $sites) {
         $sitesChecked++
-        $siteDisplayName = if ($site.name) { $site.name } else { "Site[$sitesChecked]" }
+        $siteDisplayName = if ($site.meta -and $site.meta.desc) { $site.meta.desc } elseif ($site.meta -and $site.meta.name) { $site.meta.name } else { "Site[$sitesChecked]" }
         $hostId = if ($site.hostId) { $site.hostId } elseif ($site.id) { $site.id } else { $null }
 
         Write-Host "[INFO] Processing site: '$siteDisplayName'" -ForegroundColor Cyan
