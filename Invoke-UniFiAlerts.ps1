@@ -16,7 +16,7 @@ param(
     [switch]$CheckDeps
 )
 
-Set-StrictMode -Version Latest
+Set-StrictMode -Version 1
 $ErrorActionPreference = 'Continue'
 
 #region CONFIGURATION
