@@ -275,8 +275,6 @@ function Get-UniFiDevices {
         if ($nextToken) { $qs += "&nextToken=$([System.Uri]::EscapeDataString($nextToken))" }
         $uri = "$($Config.UnifiApiBase)/devices?$qs"
 
-        Write-Host "[DEBUG] Device request URI: $uri" -ForegroundColor DarkGray
-
         try {
             [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
 
@@ -291,16 +289,19 @@ function Get-UniFiDevices {
 
             $response = $raw | ConvertFrom-Json
 
-            Write-Host "[DEBUG] Device response keys: $(($response | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name) -join ', ')" -ForegroundColor DarkGray
+            # /v1/devices returns { data: [ { hostId, hostName, devices: [...] }, ... ] }
+            # Each element in data is a host wrapper — we must unwrap .devices from each.
+            $hostWrappers = if ($response.data) { $response.data }
+                            elseif ($response -is [array]) { $response }
+                            else { @() }
 
-            $deviceList = if ($response.devices) { $response.devices }
-                          elseif ($response.data)  { $response.data }
-                          elseif ($response -is [array]) { $response }
-                          else { @() }
+            foreach ($wrapper in $hostWrappers) {
+                $devs = if ($wrapper.devices) { $wrapper.devices }
+                        elseif ($wrapper.mac)  { @($wrapper) }   # item is already a device
+                        else                   { @() }
+                foreach ($device in $devs) { $allDevices.Add($device) }
+            }
 
-            Write-Host "[DEBUG] Devices found in response: $($deviceList.Count)" -ForegroundColor DarkGray
-
-            foreach ($device in $deviceList) { $allDevices.Add($device) }
             $nextToken = if ($response.nextToken) { $response.nextToken } else { $null }
         }
         catch {
