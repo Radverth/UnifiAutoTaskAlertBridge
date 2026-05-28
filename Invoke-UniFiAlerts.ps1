@@ -1226,7 +1226,6 @@ function Invoke-Main {
 
         # Skip sites listed in SiteExclusions (case-insensitive)
         if ($Config.SiteExclusions -and ($Config.SiteExclusions -contains $siteDisplayName.ToLower())) {
-            Write-Host "[INFO] Skipping excluded site: '$siteDisplayName'" -ForegroundColor Yellow
             continue
         }
 
