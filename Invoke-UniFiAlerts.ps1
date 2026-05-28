@@ -269,27 +269,42 @@ function Get-UniFiDevices {
     $pageSize = $Config.UnifiPageSize
 
     do {
-        $params = @{
-            'hostIds[]' = $HostId
-            'pageSize'  = $pageSize
-        }
-        if ($nextToken) { $params['nextToken'] = $nextToken }
+        # Build the query string manually — brackets in hostIds[] must not be percent-encoded
+        $encodedHostId = [System.Uri]::EscapeDataString($HostId)
+        $qs = "hostIds[]=$encodedHostId&pageSize=$pageSize"
+        if ($nextToken) { $qs += "&nextToken=$([System.Uri]::EscapeDataString($nextToken))" }
+        $uri = "$($Config.UnifiApiBase)/devices?$qs"
+
+        Write-Host "[DEBUG] Device request URI: $uri" -ForegroundColor DarkGray
 
         try {
-            $response = Invoke-UniFiRequest -Endpoint '/devices' -QueryParams $params
-            # API returns { hostId, hostName, devices: [...] } — check 'devices' first,
-            # then fall back to 'data' and bare array for forward-compatibility
+            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+
+            # Use the legacy Uri(string, dontEscape) constructor so .NET does not re-encode
+            # the brackets in hostIds[]. WebClient.DownloadString(Uri) then sends the URI as-is.
+            $uriObj = New-Object System.Uri($uri, $true)
+            $wc = [System.Net.WebClient]::new()
+            $wc.Headers.Add('Accept', 'application/json')
+            $wc.Headers.Add('X-API-Key', $Config.UnifiApiKey)
+            $raw = $wc.DownloadString($uriObj)
+            $wc.Dispose()
+
+            $response = $raw | ConvertFrom-Json
+
+            Write-Host "[DEBUG] Device response keys: $(($response | Get-Member -MemberType NoteProperty | Select-Object -ExpandProperty Name) -join ', ')" -ForegroundColor DarkGray
+
             $deviceList = if ($response.devices) { $response.devices }
                           elseif ($response.data)  { $response.data }
                           elseif ($response -is [array]) { $response }
                           else { @() }
-            foreach ($device in $deviceList) {
-                $allDevices.Add($device)
-            }
+
+            Write-Host "[DEBUG] Devices found in response: $($deviceList.Count)" -ForegroundColor DarkGray
+
+            foreach ($device in $deviceList) { $allDevices.Add($device) }
             $nextToken = if ($response.nextToken) { $response.nextToken } else { $null }
         }
         catch {
-            Write-Host "[ERROR] Failed to retrieve devices for host '$HostId'." -ForegroundColor Red
+            Write-Host "[ERROR] Failed to retrieve devices for host '$HostId': $_" -ForegroundColor Red
             return $allDevices
         }
     } while ($nextToken)
