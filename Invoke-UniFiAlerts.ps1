@@ -897,40 +897,49 @@ function Build-TicketDescription {
         default                        { "An alert condition has been detected at site '$($Alert.SiteName)' requiring review." }
     }
 
-    $description = @"
-ALERT SUMMARY
-=============
-$alertSummary
+    # Build ticket body — omit any field whose value resolved to N/A
+    $lines = [System.Collections.Generic.List[string]]::new()
 
-DEVICE DETAILS
-==============
-Device Name   : $devName
-MAC Address   : $devMac
-IP Address    : $devIp
-Model         : $devModel
-Firmware      : $devFirmware
-Site Name     : $($Alert.SiteName)
-Host ID       : $siteHostId
+    $lines.Add('ALERT SUMMARY')
+    $lines.Add('=============')
+    $lines.Add($alertSummary)
+    $lines.Add('')
+    $lines.Add('DEVICE DETAILS')
+    $lines.Add('==============')
+    if ($devName     -ne 'N/A') { $lines.Add("Device Name   : $devName") }
+    if ($devMac      -ne 'N/A') { $lines.Add("MAC Address   : $devMac") }
+    if ($devIp       -ne 'N/A') { $lines.Add("IP Address    : $devIp") }
+    if ($devModel    -ne 'N/A') { $lines.Add("Model         : $devModel") }
+    if ($devFirmware -ne 'N/A' -and $devFirmware -ne '') { $lines.Add("Firmware      : $devFirmware") }
+    $lines.Add("Site Name     : $($Alert.SiteName)")
+    if ($siteHostId  -ne 'N/A') { $lines.Add("Host ID       : $siteHostId") }
+    $lines.Add('')
 
-NETWORK CONTEXT
-===============
-WAN Uptime    : $wanUptime%
-TX Retry Rate : $txRetry%
-ISP Name      : $ispName
-ISP ASN       : $ispAsn
-External IP   : $externalIp
-Wired Clients : $wiredClients
-Wifi Clients  : $wifiClients
+    # Only include the Network Context section if at least one value is available
+    $netLines = [System.Collections.Generic.List[string]]::new()
+    if ($wanUptime     -ne 'N/A') { $netLines.Add("WAN Uptime    : $wanUptime%") }
+    if ($txRetry       -ne 'N/A') { $netLines.Add("TX Retry Rate : $txRetry%") }
+    if ($ispName       -ne 'N/A') { $netLines.Add("ISP Name      : $ispName") }
+    if ($ispAsn        -ne 'N/A') { $netLines.Add("ISP ASN       : $ispAsn") }
+    if ($externalIp    -ne 'N/A') { $netLines.Add("External IP   : $externalIp") }
+    if ($wiredClients  -ne 'N/A') { $netLines.Add("Wired Clients : $wiredClients") }
+    if ($wifiClients   -ne 'N/A') { $netLines.Add("Wifi Clients  : $wifiClients") }
+    if ($netLines.Count -gt 0) {
+        $lines.Add('NETWORK CONTEXT')
+        $lines.Add('===============')
+        foreach ($nl in $netLines) { $lines.Add($nl) }
+        $lines.Add('')
+    }
 
-DETECTED AT
-===========
-$ts
+    $lines.Add('DETECTED AT')
+    $lines.Add('===========')
+    $lines.Add($ts)
+    $lines.Add('')
+    $lines.Add('RECOMMENDED MITIGATION')
+    $lines.Add('======================')
+    $lines.Add($mitigationSteps)
 
-RECOMMENDED MITIGATION
-======================
-$mitigationSteps
-"@
-
+    $description = $lines -join "`n"
     return $description
 }
 
