@@ -291,11 +291,14 @@ function Get-UniFiDevices {
 
             # /v1/devices returns { data: [ { hostId, hostName, devices: [...] }, ... ] }
             # Each element in data is a host wrapper — we must unwrap .devices from each.
+            # Filter by hostId client-side in case the API ignores the hostIds[] query param
+            # (e.g. when the colon in the ID is percent-encoded and not recognised by the API).
             $hostWrappers = if ($response.data) { $response.data }
                             elseif ($response -is [array]) { $response }
                             else { @() }
 
             foreach ($wrapper in $hostWrappers) {
+                if ($wrapper.hostId -and $wrapper.hostId -ne $HostId) { continue }
                 $devs = if ($wrapper.devices) { $wrapper.devices }
                         elseif ($wrapper.mac)  { @($wrapper) }   # item is already a device
                         else                   { @() }
