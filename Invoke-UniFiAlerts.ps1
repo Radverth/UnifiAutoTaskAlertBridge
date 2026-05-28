@@ -804,19 +804,6 @@ function Invoke-AlertEvaluation {
         })
     }
 
-    # Alert 9: No Gateway Device — from statistics.counts.gatewayDevice
-    $totalDeviceCount = if ($counts -and $null -ne $counts.totalDevice) { [int]$counts.totalDevice } else { $Devices.Count }
-    if ($totalDeviceCount -gt 0 -and $gatewayCount -eq 0) {
-        $alerts.Add([pscustomobject]@{
-            AlertType  = 'NoGatewayDevice'
-            Priority   = 'Critical'
-            Title      = "CRITICAL -- ${siteName}: No gateway device detected on site"
-            SiteName   = $siteName
-            DeviceName = 'N/A'
-            DeviceData = $null
-            SiteData   = $Site
-        })
-    }
 
     return $alerts.ToArray()
 }
