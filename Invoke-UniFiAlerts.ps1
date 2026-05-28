@@ -619,10 +619,15 @@ function Invoke-AlertEvaluation {
     }
 
     # Alerts 3 & 4: TX Retry Rate — from site statistics.percentages.txRetry
+    # For site-level alerts, attach the gateway/console device so tickets show real device info.
+    $gatewayDevice = $Devices | Where-Object { $_.isConsole -eq $true } | Select-Object -First 1
+    if (-not $gatewayDevice) { $gatewayDevice = $Devices | Select-Object -First 1 }
+
     $txRetryRate = if ($pct -and $null -ne $pct.txRetry) { [double]$pct.txRetry } else { $null }
 
     if ($null -ne $txRetryRate) {
         $rateRounded = [math]::Round($txRetryRate, 1)
+        $gwName = if ($gatewayDevice -and $gatewayDevice.name) { $gatewayDevice.name } else { 'N/A' }
 
         if ($txRetryRate -gt $Config.TxRetryCriticalPct) {
             $alerts.Add([pscustomobject]@{
@@ -630,8 +635,8 @@ function Invoke-AlertEvaluation {
                 Priority   = 'Critical'
                 Title      = "NETWORK CRITICAL -- ${siteName}: Critical WAN retry rate (${rateRounded}%)"
                 SiteName   = $siteName
-                DeviceName = 'N/A'
-                DeviceData = $null
+                DeviceName = $gwName
+                DeviceData = $gatewayDevice
                 SiteData   = $Site
             })
         }
@@ -641,8 +646,8 @@ function Invoke-AlertEvaluation {
                 Priority   = 'Medium'
                 Title      = "NETWORK DEGRADED -- ${siteName}: Elevated WAN retry rate (${rateRounded}%)"
                 SiteName   = $siteName
-                DeviceName = 'N/A'
-                DeviceData = $null
+                DeviceName = $gwName
+                DeviceData = $gatewayDevice
                 SiteData   = $Site
             })
         }
@@ -658,8 +663,8 @@ function Invoke-AlertEvaluation {
             Priority   = 'High'
             Title      = "WAN ISSUE -- ${siteName}: WAN uptime below threshold (${uptimeRounded}%)"
             SiteName   = $siteName
-            DeviceName = 'N/A'
-            DeviceData = $null
+            DeviceName = if ($gatewayDevice -and $gatewayDevice.name) { $gatewayDevice.name } else { 'N/A' }
+            DeviceData = $gatewayDevice
             SiteData   = $Site
         })
     }
@@ -673,8 +678,8 @@ function Invoke-AlertEvaluation {
             Priority   = 'High'
             Title      = "ALERT -- ${siteName}: ${criticalNotifCount} critical notification(s) on controller"
             SiteName   = $siteName
-            DeviceName = 'N/A'
-            DeviceData = $null
+            DeviceName = if ($gatewayDevice -and $gatewayDevice.name) { $gatewayDevice.name } else { 'N/A' }
+            DeviceData = $gatewayDevice
             SiteData   = $Site
         })
     }
@@ -690,8 +695,8 @@ function Invoke-AlertEvaluation {
             Priority   = 'High'
             Title      = "CONNECTIVITY ISSUE -- ${siteName}: Internet issues detected by controller"
             SiteName   = $siteName
-            DeviceName = 'N/A'
-            DeviceData = $null
+            DeviceName = if ($gatewayDevice -and $gatewayDevice.name) { $gatewayDevice.name } else { 'N/A' }
+            DeviceData = $gatewayDevice
             SiteData   = $Site
         })
     }
@@ -703,8 +708,8 @@ function Invoke-AlertEvaluation {
             Priority   = 'Critical'
             Title      = "NETWORK OUTAGE -- ${siteName}: ${offlineCount} devices offline simultaneously"
             SiteName   = $siteName
-            DeviceName = 'Multiple'
-            DeviceData = $null
+            DeviceName = if ($gatewayDevice -and $gatewayDevice.name) { $gatewayDevice.name } else { 'Multiple' }
+            DeviceData = $gatewayDevice
             SiteData   = $Site
         })
     }
