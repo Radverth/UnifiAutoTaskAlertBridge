@@ -117,7 +117,7 @@ $sites[0].PSObject.Properties | ForEach-Object {
 # Step 3 — Fetch alerts
 # ---------------------------------------------------------------------------
 
-Write-Section 'STEP 3 — Unarchived Alerts'
+Write-Section 'STEP 3 — Event Log'
 
 $cutoff    = if ($MAX_AGE_HOURS -gt 0) { (Get-Date).ToUniversalTime().AddHours(-$MAX_AGE_HOURS) } else { $null }
 $allAlerts = @()
@@ -127,10 +127,10 @@ foreach ($site in $sites) {
     $siteName = $site.name
 
     try {
-        $alarmUri = "$UNIFI_BASE_URL/proxy/network/api/s/$siteId/stat/alarm"
+        $alarmUri = "$UNIFI_BASE_URL/proxy/network/api/s/$siteId/stat/event"
         Write-Info "Trying: $alarmUri"
         $response   = Invoke-UniFiRequest -Uri $alarmUri
-        $unarchived = @($response.data | Where-Object { $_.archived -eq $false })
+        $unarchived = @($response.data)
 
         if ($cutoff) {
             $unarchived = @($unarchived | Where-Object {
@@ -151,7 +151,7 @@ foreach ($site in $sites) {
     }
     catch {
         Write-Fail "[$siteName]  Could not fetch alerts: $($_)"
-        Write-Warn "  URL tried: $UNIFI_BASE_URL/proxy/network/api/s/$siteId/stat/alarm"
+        Write-Warn "  URL tried: $UNIFI_BASE_URL/proxy/network/api/s/$siteId/stat/event"
         Write-Warn "  Check the raw site fields above — the correct ID for the path may not be 'siteId'"
     }
 }
@@ -177,10 +177,11 @@ foreach ($alert in $allAlerts) {
               else { 'Unknown Device' }
 
     Write-Host ''
-    Write-Host "  Alert ID : $($alert._id)" -ForegroundColor White
+    Write-Host "  Event ID : $($alert._id)" -ForegroundColor White
     Write-Host "  Site     : $($alert._site_name)" -ForegroundColor White
     Write-Host "  Device   : $device" -ForegroundColor White
-    Write-Host "  Event    : $($alert.key)" -ForegroundColor White
+    Write-Host "  Key      : $($alert.key)" -ForegroundColor White
+    Write-Host "  Message  : $($alert.msg)" -ForegroundColor White
     Write-Host "  Time     : $($alert.datetime)" -ForegroundColor White
 }
 
