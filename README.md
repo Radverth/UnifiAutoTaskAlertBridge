@@ -106,6 +106,14 @@ Queries UniFi as normal but makes **no writes to Autotask**. Prints a full colou
 .\Invoke-UniFiAlerts.ps1 -TestMode
 ```
 
+Test mode can also be enabled via the `$Config` block — useful when running from a platform that cannot pass switch parameters (e.g. Datto RMM):
+
+```powershell
+TestMode = $true
+```
+
+The `-TestMode` switch and the config variable can be used interchangeably; either will activate test mode.
+
 ### CheckDeps Mode (`-CheckDeps`)
 
 Runs a pre-flight checklist and exits. No API calls are made. Use this to validate your environment before the first run.

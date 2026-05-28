@@ -57,6 +57,11 @@ $Config = @{
     # WAN uptime threshold (percentage)
     WanUptimeWarningPct     = 99.9
 
+    # Set to $true to run in Test Mode without passing -TestMode on the command line.
+    # Useful when deploying via Datto RMM or any runner that cannot pass switch parameters.
+    # The -TestMode switch takes precedence if both are set.
+    TestMode                = $false
+
     # UniFi site name (lowercase) → Autotask company name
     # Add entries as needed: 'site-name' = 'Company Name in Autotask'
     SiteMapping             = @{
@@ -969,6 +974,9 @@ function Invoke-Main {
     [CmdletBinding()]
     param()
 
+    # Resolve effective test mode — config variable or command-line switch
+    $effectiveTestMode = $TestMode -or ($Config.TestMode -eq $true)
+
     # Counters
     $sitesChecked      = 0
     $devicesChecked    = 0
@@ -977,7 +985,7 @@ function Invoke-Main {
     $ticketsSuppressed = 0
     $errorsEncountered = 0
 
-    if ($TestMode) {
+    if ($effectiveTestMode) {
         Write-Host "`n*** TEST MODE -- No tickets have been or will be raised during this run ***`n" -ForegroundColor Yellow
     }
 
@@ -990,13 +998,13 @@ function Invoke-Main {
     catch {
         Write-Host "[ERROR] Failed to retrieve UniFi sites. Aborting." -ForegroundColor Red
         $errorsEncountered++
-        Write-RunSummary -SitesChecked 0 -DevicesChecked 0 -AlertsTriggered 0 -TicketsRaised 0 -TicketsSuppressed 0 -ErrorsEncountered $errorsEncountered -IsTestMode:$TestMode
+        Write-RunSummary -SitesChecked 0 -DevicesChecked 0 -AlertsTriggered 0 -TicketsRaised 0 -TicketsSuppressed 0 -ErrorsEncountered $errorsEncountered -IsTestMode:$effectiveTestMode
         return
     }
 
     if (-not $sites -or $sites.Count -eq 0) {
         Write-Host "[WARNING] No sites returned from UniFi API." -ForegroundColor Yellow
-        Write-RunSummary -SitesChecked 0 -DevicesChecked 0 -AlertsTriggered 0 -TicketsRaised 0 -TicketsSuppressed 0 -ErrorsEncountered $errorsEncountered -IsTestMode:$TestMode
+        Write-RunSummary -SitesChecked 0 -DevicesChecked 0 -AlertsTriggered 0 -TicketsRaised 0 -TicketsSuppressed 0 -ErrorsEncountered $errorsEncountered -IsTestMode:$effectiveTestMode
         return
     }
 
@@ -1060,7 +1068,7 @@ function Invoke-Main {
 
     if ($alertsTriggered -eq 0) {
         Write-Host "[INFO] No alerts triggered. Network looks healthy." -ForegroundColor Green
-        Write-RunSummary -SitesChecked $sitesChecked -DevicesChecked $devicesChecked -AlertsTriggered 0 -TicketsRaised 0 -TicketsSuppressed 0 -ErrorsEncountered $errorsEncountered -IsTestMode:$TestMode
+        Write-RunSummary -SitesChecked $sitesChecked -DevicesChecked $devicesChecked -AlertsTriggered 0 -TicketsRaised 0 -TicketsSuppressed 0 -ErrorsEncountered $errorsEncountered -IsTestMode:$effectiveTestMode
         return
     }
 
@@ -1106,7 +1114,7 @@ function Invoke-Main {
             }
         }
 
-        if ($TestMode) {
+        if ($effectiveTestMode) {
             Write-TicketPreview `
                 -Alert $alert `
                 -Index $previewIndex `
@@ -1177,7 +1185,7 @@ function Invoke-Main {
         -TicketsRaised     $ticketsRaised `
         -TicketsSuppressed $ticketsSuppressed `
         -ErrorsEncountered $errorsEncountered `
-        -IsTestMode:$TestMode
+        -IsTestMode:$effectiveTestMode
 }
 
 # Entry point
