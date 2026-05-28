@@ -53,6 +53,8 @@ All settings live in the `$Config` hashtable at the top of the script. No values
 | `TxRetryCriticalPct` | WAN retry % for Critical ticket | `20.0` |
 | `WanUptimeWarningPct` | WAN uptime % below which a ticket is raised | `99.9` |
 | `FirmwareExclusions` | Device shortname → versions to suppress firmware alerts for | `@{ 'US24P250' = @('7.2.123') }` |
+| `GroupAlertsBySite` | Combine all alerts for the same site into a single ticket | `$false` |
+| `TestModeOutputFile` | Path to write test mode preview output (plain text); empty string disables | `'C:\Scripts\preview.txt'` |
 | `SiteMapping` | UniFi site name → Autotask company name | `@{ 'clientsite1' = 'Acme Corp' }` |
 
 ### Finding Your Site Names

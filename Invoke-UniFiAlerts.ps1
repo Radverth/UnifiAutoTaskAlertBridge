@@ -67,6 +67,15 @@ $Config = @{
     # The -TestMode switch takes precedence if both are set.
     TestMode                = $false
 
+    # When TestMode is active, write the full preview to this file path in addition to
+    # the console. Leave empty ('') to disable file output.
+    TestModeOutputFile      = ''   # e.g. 'C:\Scripts\UniFiAlerts-Preview.txt'
+
+    # Group all alerts for the same site into a single Autotask ticket instead of one
+    # ticket per alert. The ticket title becomes the site name and the description lists
+    # every alert condition found. Duplicate suppression checks for an open site ticket.
+    GroupAlertsBySite       = $false
+
     # Firmware versions to suppress per device shortname.
     # If a device is intentionally pinned to a specific version, add it here to prevent
     # firmware update alerts. Keys are the shortname field from the UniFi device object
@@ -1000,41 +1009,45 @@ function Write-TicketPreview {
 
     $border = '=' * 65
 
-    Write-Host "`n╔══ TICKET PREVIEW [$Index of $Total] $border" -ForegroundColor Cyan
-
-    Write-Host "  TITLE    : $($Alert.Title)" -ForegroundColor White
-
-    $companyDisplay = if ($CompanyName) { $CompanyName } else { 'Unknown' }
+    $companyDisplay   = if ($CompanyName) { $CompanyName } else { 'Unknown' }
     $companyIdDisplay = if ($null -ne $CompanyId) { " (ID: $CompanyId)" } else { '' }
-    Write-Host "  COMPANY  : $companyDisplay$companyIdDisplay" -ForegroundColor White
-
-    $contactDisplay = if ($Contact) {
-        $cName = "$($Contact.firstName) $($Contact.lastName)".Trim()
+    $contactDisplay   = if ($Contact) {
+        $cName  = "$($Contact.firstName) $($Contact.lastName)".Trim()
         $cEmail = if ($Contact.emailAddress) { " ($($Contact.emailAddress))" } else { '' }
         "$cName$cEmail"
-    }
-    else { 'No contact found' }
-    Write-Host "  CONTACT  : $contactDisplay" -ForegroundColor White
+    } else { 'No contact found' }
+    $suppressedLine = if ($SuppressedTicket) { "  [SUPPRESSED -- WOULD NOT CREATE] Existing ticket ID: $($SuppressedTicket.id)" } else { $null }
 
+    Write-Host "`n╔══ TICKET PREVIEW [$Index of $Total] $border" -ForegroundColor Cyan
+    Write-Host "  TITLE    : $($Alert.Title)" -ForegroundColor White
+    Write-Host "  COMPANY  : $companyDisplay$companyIdDisplay" -ForegroundColor White
+    Write-Host "  CONTACT  : $contactDisplay" -ForegroundColor White
     $priorityColor = switch ($Alert.Priority) {
-        'Critical' { 'Red' }
-        'High'     { 'Yellow' }
-        'Medium'   { 'Green' }
-        default    { 'White' }
+        'Critical' { 'Red' }; 'High' { 'Yellow' }; 'Medium' { 'Green' }; default { 'White' }
     }
     Write-Host "  PRIORITY : $($Alert.Priority.ToUpper())" -ForegroundColor $priorityColor
-
     Write-Host "  QUEUE    : (ID: $($Config.TicketQueueId))" -ForegroundColor White
-
-    if ($SuppressedTicket) {
-        Write-Host "  [SUPPRESSED -- WOULD NOT CREATE] Existing ticket ID: $($SuppressedTicket.id)" -ForegroundColor Yellow
-    }
-
+    if ($suppressedLine) { Write-Host $suppressedLine -ForegroundColor Yellow }
     Write-Host "  -- DESCRIPTION PREVIEW $('-' * 46)" -ForegroundColor Cyan
-    $Description -split "`n" | ForEach-Object {
-        Write-Host "  $_" -ForegroundColor Gray
-    }
+    $Description -split "`n" | ForEach-Object { Write-Host "  $_" -ForegroundColor Gray }
     Write-Host "╚$('=' * 65)╝" -ForegroundColor Cyan
+
+    # Optionally append to file
+    if ($Config.TestModeOutputFile) {
+        $fileLines = [System.Collections.Generic.List[string]]::new()
+        $fileLines.Add('')
+        $fileLines.Add("╔══ TICKET PREVIEW [$Index of $Total] $border")
+        $fileLines.Add("  TITLE    : $($Alert.Title)")
+        $fileLines.Add("  COMPANY  : $companyDisplay$companyIdDisplay")
+        $fileLines.Add("  CONTACT  : $contactDisplay")
+        $fileLines.Add("  PRIORITY : $($Alert.Priority.ToUpper())")
+        $fileLines.Add("  QUEUE    : (ID: $($Config.TicketQueueId))")
+        if ($suppressedLine) { $fileLines.Add($suppressedLine) }
+        $fileLines.Add("  -- DESCRIPTION PREVIEW $('-' * 46)")
+        $Description -split "`n" | ForEach-Object { $fileLines.Add("  $_") }
+        $fileLines.Add("╚$('=' * 65)╝")
+        $fileLines | Add-Content -Path $Config.TestModeOutputFile -Encoding UTF8
+    }
 }
 
 function Write-RunSummary {
@@ -1231,115 +1244,279 @@ function Invoke-Main {
 
     Write-Host "[INFO] Total alerts to process: $alertsTriggered" -ForegroundColor Cyan
 
-    # Process each alert
-    $previewIndex = 0
-    foreach ($alertEntry in $allAlertData) {
-        $alert = $alertEntry.Alert
-        $previewIndex++
+    # Write file header if outputting to file in test mode
+    if ($effectiveTestMode -and $Config.TestModeOutputFile) {
+        $runTs   = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+        $header  = [System.Collections.Generic.List[string]]::new()
+        $header.Add("UniFi Alert Bridge -- Test Mode Preview")
+        $header.Add("Run timestamp : $runTs")
+        $header.Add("Total alerts  : $alertsTriggered")
+        $header.Add("Grouped       : $(if ($Config.GroupAlertsBySite) { 'Yes (one ticket per site)' } else { 'No (one ticket per alert)' })")
+        $header.Add('=' * 70)
+        $header | Set-Content -Path $Config.TestModeOutputFile -Encoding UTF8
+    }
 
-        # Enforce MaxTicketsPerRun limit (0 = unlimited)
-        $ticketCount = $ticketsRaised + $ticketsSuppressed
-        if ($Config.MaxTicketsPerRun -gt 0 -and $ticketCount -ge $Config.MaxTicketsPerRun) {
-            $remaining = $allAlertData.Count - $previewIndex + 1
-            Write-Host "[WARNING] MaxTicketsPerRun ($($Config.MaxTicketsPerRun)) reached. Skipping $remaining remaining alert(s)." -ForegroundColor Yellow
-            break
+    # Build the list of work items: either one per alert, or one per site (grouped)
+    if ($Config.GroupAlertsBySite) {
+        # Group allAlertData by SiteName
+        $siteGroups = [System.Collections.Generic.Dictionary[string,System.Collections.Generic.List[object]]]::new()
+        foreach ($entry in $allAlertData) {
+            $sn = $entry.Alert.SiteName
+            if (-not $siteGroups.ContainsKey($sn)) {
+                $siteGroups[$sn] = [System.Collections.Generic.List[object]]::new()
+            }
+            $siteGroups[$sn].Add($entry)
         }
+        $totalAlerts = $siteGroups.Count
+        Write-Host "[INFO] GroupAlertsBySite enabled -- $($siteGroups.Count) site ticket(s) to process." -ForegroundColor Cyan
 
-        # Resolve company and contact
-        $resolution = $null
-        try {
-            $resolution = Resolve-CompanyAndContact -SiteName $alert.SiteName
-        }
-        catch {
-            Write-Host "[ERROR] Failed to resolve company/contact for site '$($alert.SiteName)': $_" -ForegroundColor Red
-            $errorsEncountered++
-            continue
-        }
+        $previewIndex = 0
+        foreach ($siteName in $siteGroups.Keys) {
+            $entries = $siteGroups[$siteName]
+            $previewIndex++
 
-        $companyName = $resolution.CompanyName
-        $companyId   = $resolution.CompanyId
-        $contact     = $resolution.Contact
-        $contactId   = if ($contact -and $contact.id) { $contact.id } else { $null }
+            # Enforce MaxTicketsPerRun
+            $ticketCount = $ticketsRaised + $ticketsSuppressed
+            if ($Config.MaxTicketsPerRun -gt 0 -and $ticketCount -ge $Config.MaxTicketsPerRun) {
+                $remaining = $siteGroups.Count - $previewIndex + 1
+                Write-Host "[WARNING] MaxTicketsPerRun ($($Config.MaxTicketsPerRun)) reached. Skipping $remaining remaining site(s)." -ForegroundColor Yellow
+                break
+            }
 
-        # Build description
-        $description = Build-TicketDescription -Alert $alert
+            # Highest priority across all alerts for this site
+            $priorityOrder = @{ 'Critical' = 0; 'High' = 1; 'Medium' = 2; 'Low' = 3 }
+            $topPriority = $entries | Sort-Object { $priorityOrder[$_.Alert.Priority] } | Select-Object -First 1
+            $groupPriority = $topPriority.Alert.Priority
 
-        # Duplicate suppression
-        $suppressedTicket = $null
-        if ($null -ne $companyId) {
+            # Combined title
+            $issueCount  = $entries.Count
+            $groupTitle  = "NETWORK ALERT -- $siteName`: $issueCount issue(s) detected"
+
+            # Combined description: header then each alert's description separated by dividers
+            $combinedParts = [System.Collections.Generic.List[string]]::new()
+            $combinedParts.Add("$issueCount alert(s) detected for site: $siteName")
+            $combinedParts.Add('')
+            $divider = '-' * 60
+            for ($i = 0; $i -lt $entries.Count; $i++) {
+                $combinedParts.Add("[$($i + 1) of $issueCount] $($entries[$i].Alert.Title)")
+                $combinedParts.Add($divider)
+                $combinedParts.Add((Build-TicketDescription -Alert $entries[$i].Alert))
+                if ($i -lt ($entries.Count - 1)) { $combinedParts.Add('') }
+            }
+            $groupDescription = $combinedParts -join "`n"
+
+            # Use the first alert as the representative for company/contact resolution
+            $firstAlert = $entries[0].Alert
+
+            # Build a synthetic alert object for preview/ticket functions
+            $groupAlert = [pscustomobject]@{
+                Title      = $groupTitle
+                SiteName   = $siteName
+                Priority   = $groupPriority
+                DeviceData = $firstAlert.DeviceData
+                SiteData   = $firstAlert.SiteData
+                Mitigation = ''
+                FurtherInfo = ''
+            }
+
+            # Resolve company and contact
+            $resolution = $null
             try {
-                $suppressedTicket = Get-ExistingOpenTicket `
-                    -Title $alert.Title `
-                    -CompanyId ([int]$companyId) `
-                    -ClosedStatusIds $Config.ClosedStatusIds
+                $resolution = Resolve-CompanyAndContact -SiteName $siteName
             }
             catch {
-                Write-Host "[ERROR] Duplicate check failed for '$($alert.Title)': $_" -ForegroundColor Red
+                Write-Host "[ERROR] Failed to resolve company/contact for site '$siteName': $_" -ForegroundColor Red
                 $errorsEncountered++
+                continue
             }
-        }
 
-        if ($effectiveTestMode) {
-            Write-TicketPreview `
-                -Alert $alert `
-                -Index $previewIndex `
-                -Total $totalAlerts `
-                -CompanyName $companyName `
-                -CompanyId $companyId `
-                -Contact $contact `
-                -Description $description `
-                -SuppressedTicket $suppressedTicket
+            $companyName = $resolution.CompanyName
+            $companyId   = $resolution.CompanyId
+            $contact     = $resolution.Contact
+            $contactId   = if ($contact -and $contact.id) { $contact.id } else { $null }
 
+            # Duplicate suppression
+            $suppressedTicket = $null
+            if ($null -ne $companyId) {
+                try {
+                    $suppressedTicket = Get-ExistingOpenTicket `
+                        -Title $groupTitle `
+                        -CompanyId ([int]$companyId) `
+                        -ClosedStatusIds $Config.ClosedStatusIds
+                }
+                catch {
+                    Write-Host "[ERROR] Duplicate check failed for '$groupTitle': $_" -ForegroundColor Red
+                    $errorsEncountered++
+                }
+            }
+
+            if ($effectiveTestMode) {
+                Write-TicketPreview `
+                    -Alert $groupAlert `
+                    -Index $previewIndex `
+                    -Total $totalAlerts `
+                    -CompanyName $companyName `
+                    -CompanyId $companyId `
+                    -Contact $contact `
+                    -Description $groupDescription `
+                    -SuppressedTicket $suppressedTicket
+
+                if ($suppressedTicket) { $ticketsSuppressed++ } else { $ticketsRaised++ }
+                continue
+            }
+
+            # Live mode
             if ($suppressedTicket) {
+                Write-Host "[SUPPRESSED] Open ticket already exists (ID: $($suppressedTicket.id)) -- $groupTitle" -ForegroundColor Yellow
                 $ticketsSuppressed++
+                continue
             }
-            else {
-                $ticketsRaised++
-            }
-            continue
-        }
 
-        # Live mode
-        if ($suppressedTicket) {
-            Write-Host "[SUPPRESSED] Open ticket already exists (ID: $($suppressedTicket.id)) -- $($alert.Title)" -ForegroundColor Yellow
-            $ticketsSuppressed++
-            continue
-        }
-
-        # Build ticket payload
-        $ticketPayload = @{
-            title       = $alert.Title
-            companyID   = $companyId
-            queueID     = $Config.TicketQueueId
-            status      = $Config.TicketStatusNew
-            source      = $Config.TicketSourceMonitor
-            priority    = Get-PriorityInt -Priority $alert.Priority
-            description = $description
-        }
-        if ($null -ne $contactId) {
-            $ticketPayload['contactID'] = $contactId
-        }
-
-        Write-Host "[INFO] Creating ticket: $($alert.Title)" -ForegroundColor Cyan
-        try {
-            $result = New-AutotaskTicket -TicketData $ticketPayload
-            if ($result -and ($result.id -or ($result.itemId))) {
-                $newId = if ($result.id) { $result.id } elseif ($result.itemId) { $result.itemId } else { 'unknown' }
-                Write-Host "[SUCCESS] Ticket created (ID: $newId): $($alert.Title)" -ForegroundColor Green
-                $ticketsRaised++
+            $ticketPayload = @{
+                title       = $groupTitle
+                companyID   = $companyId
+                queueID     = $Config.TicketQueueId
+                status      = $Config.TicketStatusNew
+                source      = $Config.TicketSourceMonitor
+                priority    = Get-PriorityInt -Priority $groupPriority
+                description = $groupDescription
             }
-            elseif ($result) {
-                Write-Host "[SUCCESS] Ticket created: $($alert.Title)" -ForegroundColor Green
-                $ticketsRaised++
+            if ($null -ne $contactId) { $ticketPayload['contactID'] = $contactId }
+
+            Write-Host "[INFO] Creating grouped ticket: $groupTitle" -ForegroundColor Cyan
+            try {
+                $result = New-AutotaskTicket -TicketData $ticketPayload
+                if ($result -and ($result.id -or $result.itemId)) {
+                    $newId = if ($result.id) { $result.id } elseif ($result.itemId) { $result.itemId } else { 'unknown' }
+                    Write-Host "[SUCCESS] Ticket created (ID: $newId): $groupTitle" -ForegroundColor Green
+                    $ticketsRaised++
+                }
+                elseif ($result) {
+                    Write-Host "[SUCCESS] Ticket created: $groupTitle" -ForegroundColor Green
+                    $ticketsRaised++
+                }
+                else {
+                    Write-Host "[ERROR] Ticket creation returned no result for: $groupTitle" -ForegroundColor Red
+                    $errorsEncountered++
+                }
             }
-            else {
-                Write-Host "[ERROR] Ticket creation returned no result for: $($alert.Title)" -ForegroundColor Red
+            catch {
+                Write-Host "[ERROR] Ticket creation threw an exception for '$groupTitle': $_" -ForegroundColor Red
                 $errorsEncountered++
             }
         }
-        catch {
-            Write-Host "[ERROR] Ticket creation threw an exception for '$($alert.Title)': $_" -ForegroundColor Red
-            $errorsEncountered++
+    }
+    else {
+        # One ticket per alert (original behaviour)
+        $previewIndex = 0
+        foreach ($alertEntry in $allAlertData) {
+            $alert = $alertEntry.Alert
+            $previewIndex++
+
+            # Enforce MaxTicketsPerRun limit (0 = unlimited)
+            $ticketCount = $ticketsRaised + $ticketsSuppressed
+            if ($Config.MaxTicketsPerRun -gt 0 -and $ticketCount -ge $Config.MaxTicketsPerRun) {
+                $remaining = $allAlertData.Count - $previewIndex + 1
+                Write-Host "[WARNING] MaxTicketsPerRun ($($Config.MaxTicketsPerRun)) reached. Skipping $remaining remaining alert(s)." -ForegroundColor Yellow
+                break
+            }
+
+            # Resolve company and contact
+            $resolution = $null
+            try {
+                $resolution = Resolve-CompanyAndContact -SiteName $alert.SiteName
+            }
+            catch {
+                Write-Host "[ERROR] Failed to resolve company/contact for site '$($alert.SiteName)': $_" -ForegroundColor Red
+                $errorsEncountered++
+                continue
+            }
+
+            $companyName = $resolution.CompanyName
+            $companyId   = $resolution.CompanyId
+            $contact     = $resolution.Contact
+            $contactId   = if ($contact -and $contact.id) { $contact.id } else { $null }
+
+            # Build description
+            $description = Build-TicketDescription -Alert $alert
+
+            # Duplicate suppression
+            $suppressedTicket = $null
+            if ($null -ne $companyId) {
+                try {
+                    $suppressedTicket = Get-ExistingOpenTicket `
+                        -Title $alert.Title `
+                        -CompanyId ([int]$companyId) `
+                        -ClosedStatusIds $Config.ClosedStatusIds
+                }
+                catch {
+                    Write-Host "[ERROR] Duplicate check failed for '$($alert.Title)': $_" -ForegroundColor Red
+                    $errorsEncountered++
+                }
+            }
+
+            if ($effectiveTestMode) {
+                Write-TicketPreview `
+                    -Alert $alert `
+                    -Index $previewIndex `
+                    -Total $totalAlerts `
+                    -CompanyName $companyName `
+                    -CompanyId $companyId `
+                    -Contact $contact `
+                    -Description $description `
+                    -SuppressedTicket $suppressedTicket
+
+                if ($suppressedTicket) {
+                    $ticketsSuppressed++
+                }
+                else {
+                    $ticketsRaised++
+                }
+                continue
+            }
+
+            # Live mode
+            if ($suppressedTicket) {
+                Write-Host "[SUPPRESSED] Open ticket already exists (ID: $($suppressedTicket.id)) -- $($alert.Title)" -ForegroundColor Yellow
+                $ticketsSuppressed++
+                continue
+            }
+
+            # Build ticket payload
+            $ticketPayload = @{
+                title       = $alert.Title
+                companyID   = $companyId
+                queueID     = $Config.TicketQueueId
+                status      = $Config.TicketStatusNew
+                source      = $Config.TicketSourceMonitor
+                priority    = Get-PriorityInt -Priority $alert.Priority
+                description = $description
+            }
+            if ($null -ne $contactId) {
+                $ticketPayload['contactID'] = $contactId
+            }
+
+            Write-Host "[INFO] Creating ticket: $($alert.Title)" -ForegroundColor Cyan
+            try {
+                $result = New-AutotaskTicket -TicketData $ticketPayload
+                if ($result -and ($result.id -or ($result.itemId))) {
+                    $newId = if ($result.id) { $result.id } elseif ($result.itemId) { $result.itemId } else { 'unknown' }
+                    Write-Host "[SUCCESS] Ticket created (ID: $newId): $($alert.Title)" -ForegroundColor Green
+                    $ticketsRaised++
+                }
+                elseif ($result) {
+                    Write-Host "[SUCCESS] Ticket created: $($alert.Title)" -ForegroundColor Green
+                    $ticketsRaised++
+                }
+                else {
+                    Write-Host "[ERROR] Ticket creation returned no result for: $($alert.Title)" -ForegroundColor Red
+                    $errorsEncountered++
+                }
+            }
+            catch {
+                Write-Host "[ERROR] Ticket creation threw an exception for '$($alert.Title)': $_" -ForegroundColor Red
+                $errorsEncountered++
+            }
         }
     }
 
