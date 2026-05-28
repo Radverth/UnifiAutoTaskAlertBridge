@@ -50,29 +50,31 @@ All settings live in the `$Config` hashtable at the top of the script. No values
 | `TicketSourceMonitor` | Autotask source ID for 'Monitoring Alert' | `8` |
 | `ClosedStatusIds` | Status IDs representing closed/resolved tickets | `@(5, 9, 10)` |
 | `TxRetryWarningPct` | WAN retry % for Warning ticket | `5.0` |
-| `TxRetryCriticalPct` | WAN retry % for Critical ticket | `15.0` |
+| `TxRetryCriticalPct` | WAN retry % for Critical ticket | `20.0` |
 | `WanUptimeWarningPct` | WAN uptime % below which a ticket is raised | `99.9` |
 | `SiteMapping` | UniFi site name → Autotask company name | `@{ 'clientsite1' = 'Acme Corp' }` |
 
 ### Finding Your Site Names
 
-The script matches against the internal site slug (e.g. `default`, `clientsite1`), not the display label shown in the UniFi console. To find the exact slug for a site, run the script in `-TestMode` — each site is logged as `[INFO] Processing site: 'Default'` where the value in quotes is the display label derived from `meta.desc`. The slug used for mapping is the lowercase version of `meta.name` returned by the API. If you are unsure, check via the UniFi API directly:
+The script resolves the human-readable site name by calling `GET /v1/hosts/{id}` for each site's `hostId` and reading the `hostName` field. This is the name shown in the UniFi console (e.g. `Client Site Name`) rather than the internal `meta.name` slug (e.g. `default`).
 
+Run `-TestMode` to see the resolved name for each site — it is logged as:
 ```
-GET https://api.ui.com/v1/sites?pageSize=100
+[INFO] Host '1C0B8B...' → 'Client Site Name'
+[INFO] Processing site: 'Client Site Name'
 ```
 
-The `meta.name` field is what you put in `SiteMapping` (lowercased).
+Use these resolved names (lowercased) as the keys in `SiteMapping`.
 
 ### Site Mapping
 
-Map your UniFi site names (lowercase) to exact Autotask company names:
+Map your UniFi host names (lowercase) to exact Autotask company names:
 
 ```powershell
 SiteMapping = @{
-    'default'     = 'Affinity IT'
-    'clientsite1' = 'Acme Corporation'
-    'retailstore' = 'Retail Client Ltd'
+    'affinity it head office' = 'Affinity IT'
+    'acme corporation'        = 'Acme Corporation'
+    'retail store ltd'        = 'Retail Client Ltd'
 }
 ```
 

@@ -52,7 +52,7 @@ $Config = @{
 
     # TX retry rate thresholds (percentage)
     TxRetryWarningPct       = 5.0
-    TxRetryCriticalPct      = 15.0
+    TxRetryCriticalPct      = 20.0
 
     # WAN uptime threshold (percentage)
     WanUptimeWarningPct     = 99.9
@@ -62,8 +62,10 @@ $Config = @{
     # The -TestMode switch takes precedence if both are set.
     TestMode                = $false
 
-    # UniFi site name (lowercase) → Autotask company name
-    # Add entries as needed: 'site-name' = 'Company Name in Autotask'
+    # UniFi host name (lowercase) → Autotask company name
+    # Keys are the hostName values returned by GET /v1/hosts/{id} — these are the
+    # human-readable names shown in the UniFi console (e.g. 'client site name').
+    # Run -TestMode to see the resolved host name for each site.
     SiteMapping             = @{
         'default' = 'Affinity IT'
     }
@@ -285,6 +287,63 @@ function Get-UniFiDevices {
     return $allDevices
 }
 
+function Get-UniFiHost {
+    <#
+    .SYNOPSIS
+        Retrieves a host record from GET /v1/hosts/{id} and returns the hostName.
+        The hostName is the human-readable console name shown in the UniFi portal,
+        which is more reliable than site.meta.name for identifying client sites.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [string]$HostId
+    )
+
+    try {
+        $response = Invoke-UniFiRequest -Endpoint "/hosts/$HostId"
+        # Response may be the host object directly or wrapped in a data property
+        $host = if ($response.data) { $response.data } else { $response }
+        if ($host -and $host.hostName) { return $host.hostName }
+        if ($host -and $host.name)     { return $host.name }
+        return $null
+    }
+    catch {
+        Write-Host "[WARNING] Could not retrieve host name for hostId '$HostId'. Falling back to site meta name." -ForegroundColor Yellow
+        return $null
+    }
+}
+
+function Get-UniFiHostNameMap {
+    <#
+    .SYNOPSIS
+        Builds a hashtable of hostId → hostName for all sites by finding the
+        console device (isConsole = true) per host and calling Get-UniFiHost.
+        Results are cached so each hostId is only queried once.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [object[]]$Sites
+    )
+
+    $map = @{}
+    $uniqueHostIds = $Sites | Where-Object { $_.hostId } | ForEach-Object { $_.hostId } | Select-Object -Unique
+
+    foreach ($hostId in $uniqueHostIds) {
+        $hostName = Get-UniFiHost -HostId $hostId
+        if ($hostName) {
+            $map[$hostId] = $hostName
+            Write-Host "[INFO] Host '$hostId' → '$hostName'" -ForegroundColor Cyan
+        }
+        else {
+            $map[$hostId] = $null
+        }
+    }
+
+    return $map
+}
+
 #endregion UNIFI-API
 
 #region AUTOTASK-API
@@ -480,14 +539,19 @@ function Invoke-AlertEvaluation {
         [object]$Site,
 
         [Parameter(Mandatory)]
-        [object[]]$Devices
+        [object[]]$Devices,
+
+        # Pre-resolved human-readable site name (from /v1/hosts lookup).
+        # Falls back to site.meta if not provided.
+        [string]$SiteDisplayName = ''
     )
 
     $alerts = [System.Collections.Generic.List[object]]::new()
 
-    # Site name lives in meta.desc (human label) or meta.name (internal slug)
+    # Use the pre-resolved display name if provided; otherwise fall back to meta fields
     $siteName = 'Unknown Site'
-    if ($Site.meta -and $Site.meta.desc)  { $siteName = $Site.meta.desc }
+    if ($SiteDisplayName)                    { $siteName = $SiteDisplayName }
+    elseif ($Site.meta -and $Site.meta.desc) { $siteName = $Site.meta.desc }
     elseif ($Site.meta -and $Site.meta.name) { $siteName = $Site.meta.name }
 
     # Shortcut to the statistics sub-objects
@@ -1010,13 +1074,26 @@ function Invoke-Main {
 
     Write-Host "[INFO] Found $($sites.Count) site(s)." -ForegroundColor Cyan
 
+    # Build hostId → hostName lookup using GET /v1/hosts/{id}.
+    # This gives the real human-readable console name rather than the internal meta slug.
+    Write-Host "[INFO] Resolving host names from UniFi API..." -ForegroundColor Cyan
+    $hostNameMap = Get-UniFiHostNameMap -Sites @($sites)
+
     # Collect all alerts from all sites first (for preview count in TestMode)
     $allAlertData = [System.Collections.Generic.List[object]]::new()
 
     foreach ($site in $sites) {
         $sitesChecked++
-        $siteDisplayName = if ($site.meta -and $site.meta.desc) { $site.meta.desc } elseif ($site.meta -and $site.meta.name) { $site.meta.name } else { "Site[$sitesChecked]" }
-        $hostId = if ($site.hostId) { $site.hostId } elseif ($site.id) { $site.id } else { $null }
+        $hostId = if ($site.hostId) { $site.hostId } else { $null }
+
+        # Prefer hostName from /v1/hosts lookup; fall back to meta.desc / meta.name
+        $siteDisplayName = $null
+        if ($hostId -and $hostNameMap.ContainsKey($hostId) -and $hostNameMap[$hostId]) {
+            $siteDisplayName = $hostNameMap[$hostId]
+        }
+        if (-not $siteDisplayName -and $site.meta -and $site.meta.desc)  { $siteDisplayName = $site.meta.desc }
+        if (-not $siteDisplayName -and $site.meta -and $site.meta.name)  { $siteDisplayName = $site.meta.name }
+        if (-not $siteDisplayName) { $siteDisplayName = "Site[$sitesChecked]" }
 
         Write-Host "[INFO] Processing site: '$siteDisplayName'" -ForegroundColor Cyan
 
@@ -1043,7 +1120,7 @@ function Invoke-Main {
         # Evaluate alerts
         $alerts = @()
         try {
-            $alerts = Invoke-AlertEvaluation -Site $site -Devices $devices
+            $alerts = Invoke-AlertEvaluation -Site $site -Devices $devices -SiteDisplayName $siteDisplayName
         }
         catch {
             Write-Host "[ERROR] Alert evaluation failed for site '$siteDisplayName': $_" -ForegroundColor Red
