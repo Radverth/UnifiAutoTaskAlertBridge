@@ -88,6 +88,12 @@ $Config = @{
         'USMINI'    = @('7.2.123')   # USW Flex Mini
     }
 
+    # Site names (lowercase) to skip entirely — no alerts or tickets will be raised for these.
+    # Use the resolved host name shown in [INFO] Host '...' -> '...' log lines (lowercased).
+    SiteExclusions          = @(
+        'affinity controller'
+    )
+
     # UniFi host name (lowercase) → Autotask company name
     # Keys are the hostName values returned by GET /v1/hosts/{id} — these are the
     # human-readable names shown in the UniFi console (e.g. 'client site name').
@@ -1214,6 +1220,12 @@ function Invoke-Main {
         if (-not $siteDisplayName -and $site.meta -and $site.meta.desc)  { $siteDisplayName = $site.meta.desc }
         if (-not $siteDisplayName -and $site.meta -and $site.meta.name)  { $siteDisplayName = $site.meta.name }
         if (-not $siteDisplayName) { $siteDisplayName = "Site[$sitesChecked]" }
+
+        # Skip sites listed in SiteExclusions (case-insensitive)
+        if ($Config.SiteExclusions -and ($Config.SiteExclusions -contains $siteDisplayName.ToLower())) {
+            Write-Host "[INFO] Skipping excluded site: '$siteDisplayName'" -ForegroundColor Yellow
+            continue
+        }
 
         Write-Host "[INFO] Processing site: '$siteDisplayName'" -ForegroundColor Cyan
 
