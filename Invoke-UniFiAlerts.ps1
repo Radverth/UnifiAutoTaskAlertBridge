@@ -16,6 +16,7 @@ param(
     [switch]$CheckDeps
 )
 
+Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
 Set-StrictMode -Version 1
 $ErrorActionPreference = 'Continue'
 
