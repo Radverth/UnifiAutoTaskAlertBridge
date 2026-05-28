@@ -51,7 +51,7 @@ $Config = @{
     ClosedStatusIds         = @(5, 9, 10)
 
     # TX retry rate thresholds (percentage)
-    TxRetryWarningPct       = 5.0
+    TxRetryWarningPct       = 15.0
     TxRetryCriticalPct      = 20.0
 
     # WAN uptime threshold (percentage)

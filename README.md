@@ -49,7 +49,7 @@ All settings live in the `$Config` hashtable at the top of the script. No values
 | `TicketStatusNew` | Autotask status ID for 'New' | `1` |
 | `TicketSourceMonitor` | Autotask source ID for 'Monitoring Alert' | `8` |
 | `ClosedStatusIds` | Status IDs representing closed/resolved tickets | `@(5, 9, 10)` |
-| `TxRetryWarningPct` | WAN retry % for Warning ticket | `5.0` |
+| `TxRetryWarningPct` | WAN retry % for Warning ticket | `15.0` |
 | `TxRetryCriticalPct` | WAN retry % for Critical ticket | `20.0` |
 | `WanUptimeWarningPct` | WAN uptime % below which a ticket is raised | `99.9` |
 | `SiteMapping` | UniFi site name → Autotask company name | `@{ 'clientsite1' = 'Acme Corp' }` |
