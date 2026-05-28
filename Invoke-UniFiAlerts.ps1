@@ -301,15 +301,28 @@ function Get-UniFiHost {
     )
 
     try {
-        $encodedHostId = [System.Uri]::EscapeDataString($HostId)
-        $response = Invoke-UniFiRequest -Endpoint "/hosts/$encodedHostId"
-        # Response may be the host object directly or wrapped in a data property
-        $host = if ($response.data) { $response.data } else { $response }
-        # Primary: reportedState.name is the human-readable console name
-        if ($host -and $host.reportedState -and $host.reportedState.name) { return $host.reportedState.name }
-        # Fallbacks
-        if ($host -and $host.hostName)                                     { return $host.hostName }
-        if ($host -and $host.name)                                         { return $host.name }
+        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
+
+        # Build the URI as a string — colons are valid in path segments and must NOT be
+        # percent-encoded, as the API does not accept %3A in this position.
+        $uri = "$($Config.UnifiApiBase)/hosts/$HostId"
+
+        $headers = @{
+            'Accept'    = 'application/json'
+            'X-API-Key' = $Config.UnifiApiKey
+        }
+
+        # Use Invoke-WebRequest with -UseBasicParsing so .NET does not re-parse
+        # the URI and inadvertently re-encode the colon in the path segment.
+        $raw      = Invoke-WebRequest -Uri $uri -Headers $headers -Method GET -UseBasicParsing
+        $response = $raw.Content | ConvertFrom-Json
+
+        $hostObj = if ($response.data) { $response.data } else { $response }
+        if ($hostObj -and $hostObj.reportedState -and $hostObj.reportedState.name) {
+            return $hostObj.reportedState.name
+        }
+        if ($hostObj -and $hostObj.hostName) { return $hostObj.hostName }
+        if ($hostObj -and $hostObj.name)     { return $hostObj.name }
         return $null
     }
     catch {
