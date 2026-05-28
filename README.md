@@ -47,13 +47,13 @@ Invoke-UniFiAlerts.ps1
 
 API keys bypass 2FA and do not expire with password changes.
 
-1. Log in to your UniFi Network Application (web UI)
-2. Go to **Settings → System → Advanced**
-3. Scroll to **API Keys** and click **Create API Key**
+1. Go to **account.ui.com**
+2. Click your profile (top-right) → **API Keys**
+3. Click **Generate API Key**
 4. Give it a descriptive name (e.g. `Datto RMM Alert Bridge`)
 5. Copy the key — you will not be able to see it again
 
-> **Requires UniFi Network Application 8.1+.** If your controller is older, update it before proceeding.
+The key needs read access to sites and network alarms. The script uses the official UniFi Cloud API at `api.ui.com` — no direct access to individual console IPs is required.
 
 ---
 
@@ -88,8 +88,8 @@ All configuration lives on the job itself. In the job editor, go to the **Variab
 
 | Variable | Example value | Notes |
 |---|---|---|
-| `UNIFI_BASE_URL` | `https://192.168.1.1:8443` | No trailing slash. Omit `:8443` for UniFi OS (UDM/Pro). |
-| `UNIFI_API_KEY` | `••••••••` | **Mark as password.** Generated in step 1. |
+| `UNIFI_BASE_URL` | `https://api.ui.com` | UniFi Cloud API base URL — do not change unless self-hosting. |
+| `UNIFI_API_KEY` | `••••••••` | **Mark as password.** Generated in step 1 at account.ui.com. |
 | `UNIFI_SITE_FILTER` | *(leave blank)* | Optional — comma-separated site display names to restrict polling. Blank = all sites. |
 | `AT_BASE_URL` | `https://webservices2.autotask.net/ATServicesRest` | Check your zone — see note below. |
 | `AT_INTEGRATION_CODE` | `DattoRMM-UniFiAlertBridge` | Unique identifier for this integration — Admin → Resources / Users (HR) → API Tracking Identifier |

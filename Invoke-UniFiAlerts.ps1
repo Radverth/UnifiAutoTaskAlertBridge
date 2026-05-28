@@ -179,10 +179,10 @@ function Get-UniFiSession {
 
     # Validate by fetching sites — a lightweight call that confirms the key works
     try {
-        $response = Invoke-UniFiRequest -Uri "$BaseUrl/api/self/sites" -ApiKey $ApiKey
+        $response = Invoke-UniFiRequest -Uri "$BaseUrl/ea/sites" -ApiKey $ApiKey
 
-        if ($response.meta.rc -ne 'ok') {
-            throw "Controller returned: $($response.meta.msg)"
+        if ($response.data.Count -eq 0) {
+            throw "API key authenticated but returned no sites — verify the key has the correct permissions"
         }
     }
     catch {
@@ -215,17 +215,13 @@ function Get-UniFiSites {
         [hashtable]$Session
     )
 
-    $uri      = "$($Session.BaseUrl)/api/self/sites"
+    $uri      = "$($Session.BaseUrl)/ea/sites"
     $response = Invoke-UniFiRequest -Uri $uri -ApiKey $Session.ApiKey
-
-    if ($response.meta.rc -ne 'ok') {
-        throw "Failed to retrieve UniFi sites: $($response.meta.msg)"
-    }
 
     $sites = $response.data
 
     if ($Script:UniFiSiteFilter.Count -gt 0) {
-        $sites = $sites | Where-Object { $Script:UniFiSiteFilter -contains $_.desc }
+        $sites = $sites | Where-Object { $Script:UniFiSiteFilter -contains $_.name }
         Write-Log -Level Info -Message "Site filter applied — $($sites.Count) site(s) matched"
     }
 
@@ -249,15 +245,16 @@ function Get-UniFiAlerts {
     $allAlerts = @()
 
     foreach ($site in $Sites) {
-        $siteId   = $site.name   # The short ID used in API paths (not the display name)
-        $siteName = $site.desc   # The human-readable description e.g. AFF001_A1 Taxis
+        $siteId   = $site.siteId  # UUID used in API paths (cloud API)
+        $siteName = $site.name    # Human-readable description e.g. AFF001_A1 Taxis
 
-        $uri = "$($Session.BaseUrl)/api/s/$siteId/stat/alarm"
+        $uri = "$($Session.BaseUrl)/proxy/network/api/s/$siteId/stat/alarm"
 
         try {
             $response = Invoke-UniFiRequest -Uri $uri -ApiKey $Session.ApiKey
 
-            if ($response.meta.rc -ne 'ok') {
+            # meta.rc is a local-API convention; cloud proxy may omit it — only fail if explicitly not 'ok'
+            if ($response.meta -and $response.meta.rc -and $response.meta.rc -ne 'ok') {
                 Write-Log -Level Warning -Message "Could not fetch alerts for site '$siteName': $($response.meta.msg)"
                 continue
             }
@@ -962,7 +959,7 @@ function Invoke-UniFiArchiveAlert {
         [string]$AlertId
     )
 
-    $uri  = "$($Session.BaseUrl)/api/s/$SiteId/cmd/evtmgr"
+    $uri  = "$($Session.BaseUrl)/proxy/network/api/s/$SiteId/cmd/evtmgr"
     $body = @{ cmd = 'archive-alarm'; _id = $AlertId }
 
     try {
@@ -1107,7 +1104,7 @@ try {
 
     # Optionally restrict to one site when -TestSite is supplied
     if ($TestSite -ne '') {
-        $sites = $sites | Where-Object { $_.desc -eq $TestSite }
+        $sites = $sites | Where-Object { $_.name -eq $TestSite }
         if ($sites.Count -eq 0) {
             Write-Log -Level Warning -Message "No site found matching TestSite '$TestSite'"
             exit 0
