@@ -190,7 +190,10 @@ function Invoke-UniFiRequest {
 
     if ($QueryParams.Count -gt 0) {
         $queryString = ($QueryParams.GetEnumerator() | ForEach-Object {
-            "$([System.Uri]::EscapeDataString($_.Key))=$([System.Uri]::EscapeDataString($_.Value.ToString()))"
+            # Preserve square brackets in parameter names (e.g. hostIds[]) — the API
+            # requires them unencoded. Values still get fully encoded.
+            $encodedKey = [System.Uri]::EscapeDataString($_.Key) -replace '%5B','[' -replace '%5D',']'
+            "$encodedKey=$([System.Uri]::EscapeDataString($_.Value.ToString()))"
         }) -join '&'
         $uri = "${uri}?${queryString}"
     }
