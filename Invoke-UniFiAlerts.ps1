@@ -199,7 +199,10 @@ function Invoke-UniFiRequest {
     }
 
     try {
-        $response = Invoke-RestMethod -Uri $uri -Headers $headers -Method GET -ContentType 'application/json'
+        # Use Invoke-WebRequest -UseBasicParsing so .NET does not re-parse the URI
+        # through [System.Uri], which would re-encode brackets and colons in the path/query.
+        $raw      = Invoke-WebRequest -Uri $uri -Headers $headers -Method GET -UseBasicParsing
+        $response = $raw.Content | ConvertFrom-Json
         return $response
     }
     catch {
