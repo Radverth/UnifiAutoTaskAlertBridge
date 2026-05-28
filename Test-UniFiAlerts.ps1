@@ -25,8 +25,8 @@ $UNIFI_API_KEY     = 'YOUR-API-KEY-HERE'
 
 # The console ID from your unifi.ui.com URL:
 # https://unifi.ui.com/consoles/{CONSOLE_ID}/network/default/dashboard
-# Leave blank to use api.ui.com proxy (may 404 — fill this in if so)
-$UNIFI_CONSOLE_ID  = ''
+# REQUIRED — the script cannot fetch events without this
+$UNIFI_CONSOLE_ID  = 'YOUR-CONSOLE-ID-HERE'
 
 # Optional: set to a site display name to test a single site, or leave blank for all sites
 $TEST_SITE         = ''
@@ -100,6 +100,32 @@ catch {
 }
 
 # ---------------------------------------------------------------------------
+# Step 1b — List consoles (shows console IDs — copy the one you need)
+# ---------------------------------------------------------------------------
+
+Write-Section 'STEP 1b — Your Console IDs'
+
+try {
+    $consolesResponse = Invoke-UniFiRequest -Uri "$UNIFI_BASE_URL/ea/consoles"
+    if ($consolesResponse.data -and $consolesResponse.data.Count -gt 0) {
+        Write-Ok "$($consolesResponse.data.Count) console(s) found:"
+        $consolesResponse.data | ForEach-Object {
+            Write-Host "    Console ID : $($_.id)" -ForegroundColor Yellow
+            Write-Host "    Name       : $($_.name)" -ForegroundColor White
+            Write-Host ''
+        }
+        Write-Info "Copy the Console ID above into `$UNIFI_CONSOLE_ID at the top of this script."
+    }
+    else {
+        Write-Warn 'No consoles returned — your API key may not have console access.'
+    }
+}
+catch {
+    Write-Warn "Could not list consoles (non-fatal): $_"
+    Write-Info "Set UNIFI_CONSOLE_ID manually from: https://unifi.ui.com/consoles/{THIS_PART}/network/default/dashboard"
+}
+
+# ---------------------------------------------------------------------------
 # Step 2 — List sites
 # ---------------------------------------------------------------------------
 
@@ -138,6 +164,13 @@ $sites[0].PSObject.Properties | ForEach-Object {
 
 Write-Section 'STEP 3 — Event Log'
 
+if (-not $UNIFI_CONSOLE_ID -or $UNIFI_CONSOLE_ID -eq 'YOUR-CONSOLE-ID-HERE') {
+    Write-Fail 'UNIFI_CONSOLE_ID is not set. Fill in the console ID at the top of this script.'
+    Write-Info 'Find it in your unifi.ui.com URL: https://unifi.ui.com/consoles/{THIS_PART}/network/default/dashboard'
+    Write-Info 'You can also run Step 1 of this script — the /ea/consoles endpoint lists your console IDs.'
+    exit 1
+}
+
 $cutoff    = if ($MAX_AGE_HOURS -gt 0) { (Get-Date).ToUniversalTime().AddHours(-$MAX_AGE_HOURS) } else { $null }
 $allAlerts = @()
 
@@ -145,16 +178,10 @@ foreach ($site in $sites) {
     $siteId   = $site.siteId
     $siteName = $site.name
 
-    # Build the event endpoint URL.
-    # The UI path shows the site as "default" — if the UUID causes 404s, set UNIFI_CONSOLE_ID.
     try {
-        $alarmUri = if ($UNIFI_CONSOLE_ID) {
-            "https://unifi.ui.com/proxy/network/v1/api/sites/$siteId/events"
-        } else {
-            "$UNIFI_BASE_URL/proxy/network/api/s/default/stat/event"
-        }
-        Write-Info "Trying: $alarmUri"
-        $response   = Invoke-UniFiRequest -Uri $alarmUri
+        $eventUri = "$UNIFI_BASE_URL/v1/consoles/$UNIFI_CONSOLE_ID/network/default/events"
+        Write-Info "Fetching: $eventUri"
+        $response   = Invoke-UniFiRequest -Uri $eventUri
         $unarchived = @($response.data | Where-Object { $NEGATIVE_KEYS -contains $_.key })
 
         if ($cutoff) {
@@ -172,13 +199,11 @@ foreach ($site in $sites) {
         }
 
         $allAlerts += $unarchived
-        Write-Ok "[$siteName]  $($unarchived.Count) unarchived alert(s)"
+        Write-Ok "[$siteName]  $($unarchived.Count) negative event(s)"
     }
     catch {
-        Write-Fail "[$siteName]  Could not fetch alerts: $($_)"
-        Write-Warn "  URL tried: $alarmUri"
-        Write-Warn "  Try setting UNIFI_CONSOLE_ID to the ID from your unifi.ui.com URL"
-        Write-Warn "  e.g. https://unifi.ui.com/consoles/{THIS_PART}/network/default/dashboard"
+        Write-Fail "[$siteName]  Could not fetch events: $($_)"
+        Write-Warn "  URL tried: $eventUri"
     }
 }
 
