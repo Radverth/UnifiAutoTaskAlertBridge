@@ -271,15 +271,14 @@ function Get-UniFiDevices {
 
         try {
             $response = Invoke-UniFiRequest -Endpoint '/devices' -QueryParams $params
-            if ($response.data) {
-                foreach ($device in $response.data) {
-                    $allDevices.Add($device)
-                }
-            }
-            elseif ($response -is [array]) {
-                foreach ($device in $response) {
-                    $allDevices.Add($device)
-                }
+            # API returns { hostId, hostName, devices: [...] } — check 'devices' first,
+            # then fall back to 'data' and bare array for forward-compatibility
+            $deviceList = if ($response.devices) { $response.devices }
+                          elseif ($response.data)  { $response.data }
+                          elseif ($response -is [array]) { $response }
+                          else { @() }
+            foreach ($device in $deviceList) {
+                $allDevices.Add($device)
             }
             $nextToken = if ($response.nextToken) { $response.nextToken } else { $null }
         }
