@@ -23,6 +23,11 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 $UNIFI_BASE_URL    = 'https://api.ui.com'
 $UNIFI_API_KEY     = 'YOUR-API-KEY-HERE'
 
+# The console ID from your unifi.ui.com URL:
+# https://unifi.ui.com/consoles/{CONSOLE_ID}/network/default/dashboard
+# Leave blank to use api.ui.com proxy (may 404 — fill this in if so)
+$UNIFI_CONSOLE_ID  = ''
+
 # Optional: set to a site display name to test a single site, or leave blank for all sites
 $TEST_SITE         = ''
 
@@ -140,8 +145,14 @@ foreach ($site in $sites) {
     $siteId   = $site.siteId
     $siteName = $site.name
 
+    # Build the event endpoint URL.
+    # The UI path shows the site as "default" — if the UUID causes 404s, set UNIFI_CONSOLE_ID.
     try {
-        $alarmUri = "$UNIFI_BASE_URL/proxy/network/api/s/$siteId/stat/event"
+        $alarmUri = if ($UNIFI_CONSOLE_ID) {
+            "https://unifi.ui.com/proxy/network/v1/api/sites/$siteId/events"
+        } else {
+            "$UNIFI_BASE_URL/proxy/network/api/s/default/stat/event"
+        }
         Write-Info "Trying: $alarmUri"
         $response   = Invoke-UniFiRequest -Uri $alarmUri
         $unarchived = @($response.data | Where-Object { $NEGATIVE_KEYS -contains $_.key })
@@ -165,8 +176,9 @@ foreach ($site in $sites) {
     }
     catch {
         Write-Fail "[$siteName]  Could not fetch alerts: $($_)"
-        Write-Warn "  URL tried: $UNIFI_BASE_URL/proxy/network/api/s/$siteId/stat/event"
-        Write-Warn "  Check the raw site fields above — the correct ID for the path may not be 'siteId'"
+        Write-Warn "  URL tried: $alarmUri"
+        Write-Warn "  Try setting UNIFI_CONSOLE_ID to the ID from your unifi.ui.com URL"
+        Write-Warn "  e.g. https://unifi.ui.com/consoles/{THIS_PART}/network/default/dashboard"
     }
 }
 
