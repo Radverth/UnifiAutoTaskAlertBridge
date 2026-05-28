@@ -710,11 +710,14 @@ function Invoke-AlertEvaluation {
     }
 
     # Alert 7: Internet Issues — from site statistics.internetIssues (array)
+    # Only raised when WAN uptime is also degraded, to suppress transient/minor events.
     $internetIssues = if ($stats -and $stats.internetIssues) { $stats.internetIssues } else { $null }
     $hasInternetIssues = ($internetIssues -is [array] -and $internetIssues.Count -gt 0) -or
                          ($internetIssues -is [bool] -and $internetIssues)
+    $wanUptimeForIssues = if ($pct -and $null -ne $pct.wanUptime) { [double]$pct.wanUptime } else { $null }
+    $wanUptimeDegraded  = ($null -ne $wanUptimeForIssues) -and ($wanUptimeForIssues -lt $Config.WanUptimeWarningPct)
 
-    if ($hasInternetIssues) {
+    if ($hasInternetIssues -and $wanUptimeDegraded) {
         $alerts.Add([pscustomobject]@{
             AlertType  = 'InternetIssuesDetected'
             Priority   = 'High'
