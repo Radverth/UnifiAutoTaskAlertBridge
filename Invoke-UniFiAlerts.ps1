@@ -61,6 +61,7 @@ $Script:RequiredEnvVars = @(
 
 $Script:UniFiBaseUrl    = $env:UNIFI_BASE_URL
 $Script:UniFiApiKey     = $env:UNIFI_API_KEY
+$Script:UniFiConsoleId  = $env:UNIFI_CONSOLE_ID   # Optional — used only if the site object lacks a consoleId field
 $Script:UniFiSiteFilter = if ($env:UNIFI_SITE_FILTER) {
     $env:UNIFI_SITE_FILTER -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ -ne '' }
 } else { @() }
@@ -254,22 +255,28 @@ function Get-UniFiAlerts {
         $siteId   = $site.siteId  # UUID used in API paths (cloud API)
         $siteName = $site.name    # Human-readable description e.g. AFF001_A1 Taxis
 
-        $uri = "$($Session.BaseUrl)/proxy/network/api/s/$siteId/stat/alarm"
+        # Resolve console ID from the site object itself; fall back to the job variable.
+        # Each site in /ea/sites carries its own consoleId so multi-console setups
+        # work without any extra configuration.
+        $consoleId = if ($site.consoleId) { $site.consoleId }
+                     elseif ($site.hostId) { $site.hostId }
+                     else { $Script:UniFiConsoleId }
+
+        if (-not $consoleId) {
+            Write-Log -Level Warning -Message "Site '$siteName': cannot determine console ID — set UNIFI_CONSOLE_ID job variable as fallback. Skipping."
+            continue
+        }
+
+        $uri = "$($Session.BaseUrl)/v1/consoles/$consoleId/network/$siteId/events"
 
         try {
             $response = Invoke-UniFiRequest -Uri $uri -ApiKey $Session.ApiKey
-
-            # meta.rc is a local-API convention; cloud proxy may omit it — only fail if explicitly not 'ok'
-            if ($response.meta -and $response.meta.rc -and $response.meta.rc -ne 'ok') {
-                Write-Log -Level Warning -Message "Could not fetch alerts for site '$siteName': $($response.meta.msg)"
-                continue
-            }
 
             $cutoff     = (Get-Date).ToUniversalTime().AddHours(-$Script:AlertMaxAgeHours)
             $siteAlerts = @()
             $tooOld     = 0
 
-            foreach ($alert in ($response.data | Where-Object { $_.archived -eq $false })) {
+            foreach ($alert in ($response.data | Where-Object { $Script:NegativeEventKeys -contains $_.key })) {
                 # Age filter — skip alerts older than AlertMaxAgeHours
                 if ($alert.datetime) {
                     try {
@@ -286,9 +293,10 @@ function Get-UniFiAlerts {
                     }
                 }
 
-                # Annotate with site display name and short site ID for downstream processing
-                $alert | Add-Member -MemberType NoteProperty -Name 'site_name' -Value $siteName -Force
-                $alert | Add-Member -MemberType NoteProperty -Name 'site_id'   -Value $siteId   -Force
+                # Annotate with site display name, site ID, and console ID for downstream processing
+                $alert | Add-Member -MemberType NoteProperty -Name 'site_name'   -Value $siteName   -Force
+                $alert | Add-Member -MemberType NoteProperty -Name 'site_id'     -Value $siteId     -Force
+                $alert | Add-Member -MemberType NoteProperty -Name 'console_id'  -Value $consoleId  -Force
                 $siteAlerts += $alert
             }
 
@@ -530,6 +538,21 @@ $Script:AlertMap = @{
     'EVT_CLIENT_Roam'          = 'Wireless client roamed between access points'
     'EVT_CLIENT_Blocked'       = 'Wireless client was blocked'
 }
+
+# Event keys that represent negative/actionable conditions and should trigger tickets.
+# The /v1/consoles events endpoint returns all events; this whitelist filters out
+# informational ones (connects, client roams, etc.).
+$Script:NegativeEventKeys = @(
+    'EVT_AP_Disconnected',
+    'EVT_AP_Restarted',
+    'EVT_AP_UpgradeScheduled',
+    'EVT_SW_Disconnected',
+    'EVT_SW_Restarted',
+    'EVT_GW_Disconnected',
+    'EVT_GW_WANTransitioned',
+    'EVT_GW_VPNDown',
+    'EVT_LTE_Disconnected'
+)
 
 function Get-AlertTitle {
     <#
@@ -843,18 +866,20 @@ function Write-DedupLog {
     <#
     .SYNOPSIS
         Adds a new entry to the dedup log and saves it to disk.
-        SiteId is stored so the sync step can later archive the alert in UniFi.
+        SiteId and ConsoleId are stored so the sync step can later archive the alert in UniFi.
     #>
     param(
         [hashtable]$Log,
         [string]$AlertId,
         [long]$TicketId,
-        [string]$SiteId = ''
+        [string]$SiteId    = '',
+        [string]$ConsoleId = ''
     )
 
     $Log[$AlertId] = @{
         ticketId  = $TicketId
         siteId    = $SiteId
+        consoleId = $ConsoleId
         timestamp = (Get-Date -Format 'o')
     }
 
@@ -956,17 +981,18 @@ function Get-AutoTaskTicketStatus {
 function Invoke-UniFiArchiveAlert {
     <#
     .SYNOPSIS
-        Archives a single UniFi alert via the event manager command endpoint.
+        Archives a single UniFi alert via the v1 cloud API.
         Treats "not found" responses as success — the alert is already gone.
     #>
     param(
         [hashtable]$Session,
         [string]$SiteId,
+        [string]$ConsoleId,
         [string]$AlertId
     )
 
-    $uri  = "$($Session.BaseUrl)/proxy/network/api/s/$SiteId/cmd/evtmgr"
-    $body = @{ cmd = 'archive-alarm'; _id = $AlertId }
+    $uri  = "$($Session.BaseUrl)/v1/consoles/$ConsoleId/network/$SiteId/events/$AlertId/archive"
+    $body = $null
 
     try {
         $response = Invoke-UniFiRequest -Uri $uri -Method 'POST' -Body $body -ApiKey $Session.ApiKey
@@ -1020,9 +1046,10 @@ function Sync-ClosedTickets {
     $removed = 0
 
     foreach ($alertId in $keys) {
-        $entry    = $Log[$alertId]
-        $ticketId = $entry.ticketId
-        $siteId   = $entry.siteId   # May be null/empty for entries written before this update
+        $entry     = $Log[$alertId]
+        $ticketId  = $entry.ticketId
+        $siteId    = $entry.siteId    # May be null/empty for entries written before this update
+        $consoleId = if ($entry.consoleId) { $entry.consoleId } else { $Script:UniFiConsoleId }
 
         try {
             $status = Get-AutoTaskTicketStatus -TicketId $ticketId
@@ -1039,9 +1066,9 @@ function Sync-ClosedTickets {
             if ($status -ne $Script:AtClosedStatusId) { continue }
 
             # ── Ticket is closed — archive the UniFi alert ────────────────
-            if ($siteId) {
+            if ($siteId -and $consoleId) {
                 try {
-                    Invoke-UniFiArchiveAlert -Session $Session -SiteId $siteId -AlertId $alertId
+                    Invoke-UniFiArchiveAlert -Session $Session -SiteId $siteId -ConsoleId $consoleId -AlertId $alertId
                     Write-Log -Level Info -Message "Archived UniFi alert $alertId (ticket $ticketId closed)"
                 }
                 catch {
@@ -1051,9 +1078,9 @@ function Sync-ClosedTickets {
                 }
             }
             else {
-                # Entry predates siteId storage — ticket closed but we cannot archive.
+                # Entry predates consoleId/siteId storage — ticket closed but we cannot archive.
                 # Remove from log so it doesn't clutter future runs.
-                Write-Log -Level Info -Message "Ticket $ticketId closed — removing dedup entry for alert $alertId (no siteId stored; archive in UniFi manually)"
+                Write-Log -Level Info -Message "Ticket $ticketId closed — removing dedup entry for alert $alertId (no consoleId/siteId stored; archive in UniFi manually)"
             }
 
             $Log.Remove($alertId)
@@ -1186,7 +1213,7 @@ try {
             }
 
             # 6 — Record in dedup log (store siteId so sync can archive alert later)
-            Write-DedupLog -Log $dedupLog -AlertId $alertId -TicketId $ticketId -SiteId $alert.site_id
+            Write-DedupLog -Log $dedupLog -AlertId $alertId -TicketId $ticketId -SiteId $alert.site_id -ConsoleId $alert.console_id
             $ticketsCreated++
         }
         catch {

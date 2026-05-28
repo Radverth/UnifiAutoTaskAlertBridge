@@ -91,6 +91,7 @@ All configuration lives on the job itself. In the job editor, go to the **Variab
 | `UNIFI_BASE_URL` | `https://api.ui.com` | UniFi Cloud API base URL — do not change unless self-hosting. |
 | `UNIFI_API_KEY` | `••••••••` | **Mark as password.** Generated in step 1 at account.ui.com. |
 | `UNIFI_SITE_FILTER` | *(leave blank)* | Optional — comma-separated site display names to restrict polling. Blank = all sites. |
+| `UNIFI_CONSOLE_ID` | *(leave blank)* | **Optional fallback.** The script reads the console ID directly from each site returned by `/ea/sites`. Only set this if a site object is missing a `consoleId` field (e.g. older controller firmware). Find it in: `https://unifi.ui.com/consoles/{THIS_PART}/network/default/dashboard` |
 | `AT_BASE_URL` | `https://webservices2.autotask.net/ATServicesRest` | Check your zone — see note below. |
 | `AT_INTEGRATION_CODE` | `DattoRMM-UniFiAlertBridge` | Unique identifier for this integration — Admin → Resources / Users (HR) → API Tracking Identifier |
 | `AT_USERNAME` | `api-integration@yourdomain.com` | AutoTask API user email |

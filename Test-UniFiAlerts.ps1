@@ -23,10 +23,10 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 $UNIFI_BASE_URL    = 'https://api.ui.com'
 $UNIFI_API_KEY     = 'YOUR-API-KEY-HERE'
 
-# The console ID from your unifi.ui.com URL:
-# https://unifi.ui.com/consoles/{CONSOLE_ID}/network/default/dashboard
-# REQUIRED — the script cannot fetch events without this
-$UNIFI_CONSOLE_ID  = 'YOUR-CONSOLE-ID-HERE'
+# Optional fallback console ID — used only if the site object returned by /ea/sites
+# does not carry its own consoleId. Most setups will not need this set.
+# Find it in: https://unifi.ui.com/consoles/{CONSOLE_ID}/network/default/dashboard
+$UNIFI_CONSOLE_ID  = ''
 
 # Optional: set to a site display name to test a single site, or leave blank for all sites
 $TEST_SITE         = ''
@@ -164,13 +164,6 @@ $sites[0].PSObject.Properties | ForEach-Object {
 
 Write-Section 'STEP 3 — Event Log'
 
-if (-not $UNIFI_CONSOLE_ID -or $UNIFI_CONSOLE_ID -eq 'YOUR-CONSOLE-ID-HERE') {
-    Write-Fail 'UNIFI_CONSOLE_ID is not set. Fill in the console ID at the top of this script.'
-    Write-Info 'Find it in your unifi.ui.com URL: https://unifi.ui.com/consoles/{THIS_PART}/network/default/dashboard'
-    Write-Info 'You can also run Step 1 of this script — the /ea/consoles endpoint lists your console IDs.'
-    exit 1
-}
-
 $cutoff    = if ($MAX_AGE_HOURS -gt 0) { (Get-Date).ToUniversalTime().AddHours(-$MAX_AGE_HOURS) } else { $null }
 $allAlerts = @()
 
@@ -178,8 +171,19 @@ foreach ($site in $sites) {
     $siteId   = $site.siteId
     $siteName = $site.name
 
+    # Resolve the console ID: prefer the field on the site object itself so multi-console
+    # setups work without any manual config. Fall back to the value set at the top.
+    $consoleId = if ($site.consoleId) { $site.consoleId }
+                 elseif ($site.hostId) { $site.hostId }
+                 else { $UNIFI_CONSOLE_ID }
+
+    if (-not $consoleId) {
+        Write-Fail "[$siteName]  Cannot determine console ID — set UNIFI_CONSOLE_ID at the top of this script."
+        continue
+    }
+
     try {
-        $eventUri = "$UNIFI_BASE_URL/v1/consoles/$UNIFI_CONSOLE_ID/network/default/events"
+        $eventUri = "$UNIFI_BASE_URL/v1/consoles/$consoleId/network/$siteId/events"
         Write-Info "Fetching: $eventUri"
         $response   = Invoke-UniFiRequest -Uri $eventUri
         $unarchived = @($response.data | Where-Object { $NEGATIVE_KEYS -contains $_.key })
@@ -204,6 +208,7 @@ foreach ($site in $sites) {
     catch {
         Write-Fail "[$siteName]  Could not fetch events: $($_)"
         Write-Warn "  URL tried: $eventUri"
+        Write-Warn "  Console ID used: $consoleId  (from: $(if ($site.consoleId) {'site.consoleId'} elseif ($site.hostId) {'site.hostId'} else {'UNIFI_CONSOLE_ID fallback'}))"
     }
 }
 
