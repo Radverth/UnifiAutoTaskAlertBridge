@@ -100,6 +100,8 @@ All configuration lives on the job itself. In the job editor, go to the **Variab
 | `AT_PRIORITY_ID` | `1` | Admin → Service Desk → Priority |
 | `AT_CLOSED_STATUS_ID` | `5` | **Optional.** Enables two-way sync — see section below. Admin → Service Desk → Ticket Statuses. |
 | `ALERT_MAX_AGE_HOURS` | `24` | **Optional.** Alerts older than this many hours are skipped. Prevents a backlog of stale alerts creating tickets on first run. Default: 24. |
+| `TEST_MODE` | `1` | **Optional.** Set to `1` to run in test mode — dumps the first alert as JSON and exits without creating tickets. **Remove after testing.** |
+| `TEST_SITE` | `AFF001_A1 Taxis` | **Optional.** Restricts test mode to a single named site. Only used when `TEST_MODE=1`. |
 | `DEDUP_LOG_PATH` | `C:\ProgramData\DattoRMM\UniFiAlerts\dedup.json` | Must be a persistent path; folder is created automatically |
 
 > **AutoTask zone:** your zone appears in the AutoTask URL — `webservices1`, `webservices2`, etc. Using the wrong zone causes silent API failures.
@@ -179,18 +181,10 @@ Run this **before enabling the live scheduler** to verify connectivity and inspe
 
 ### In Datto RMM
 
-Add `TEST_MODE` as a temporary job variable, run the job once manually, then remove it to return to normal operation.
-
-| Variable | Value | Effect |
-|---|---|---|
-| `TEST_MODE` | `1` | Activates test mode — no tickets created, no dedup writes |
-| `TEST_SITE` | `AFF001_A1 Taxis` | Optional — restricts the test to one named site |
-
-1. Open the job in Datto RMM → **Variables** tab
-2. Add `TEST_MODE` = `1` (and optionally `TEST_SITE` = the site display name)
-3. Run the job once manually
-4. Check stdout for the JSON output
-5. **Remove `TEST_MODE`** before the scheduler runs again
+1. Open the job → **Variables** tab → add `TEST_MODE` = `1`
+2. Optionally add `TEST_SITE` = the site display name to target one site
+3. Run the job once manually and check stdout for the JSON output
+4. **Remove `TEST_MODE`** before the next scheduled run
 
 The full alert JSON appears in the job stdout log:
 
