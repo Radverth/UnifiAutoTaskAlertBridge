@@ -57,6 +57,11 @@ $Config = @{
     # WAN uptime threshold (percentage)
     WanUptimeWarningPct     = 99.9
 
+    # Maximum tickets to raise (or preview in TestMode) per run. 0 = unlimited.
+    # Useful during testing to avoid flooding Autotask. Alerts beyond this limit
+    # are skipped with a console warning.
+    MaxTicketsPerRun        = 0
+
     # Set to $true to run in Test Mode without passing -TestMode on the command line.
     # Useful when deploying via Datto RMM or any runner that cannot pass switch parameters.
     # The -TestMode switch takes precedence if both are set.
@@ -1173,6 +1178,14 @@ function Invoke-Main {
     foreach ($alertEntry in $allAlertData) {
         $alert = $alertEntry.Alert
         $previewIndex++
+
+        # Enforce MaxTicketsPerRun limit (0 = unlimited)
+        $ticketCount = $ticketsRaised + $ticketsSuppressed
+        if ($Config.MaxTicketsPerRun -gt 0 -and $ticketCount -ge $Config.MaxTicketsPerRun) {
+            $remaining = $allAlertData.Count - $previewIndex + 1
+            Write-Host "[WARNING] MaxTicketsPerRun ($($Config.MaxTicketsPerRun)) reached. Skipping $remaining remaining alert(s)." -ForegroundColor Yellow
+            break
+        }
 
         # Resolve company and contact
         $resolution = $null
