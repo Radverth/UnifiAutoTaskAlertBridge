@@ -304,8 +304,11 @@ function Get-UniFiHost {
         $response = Invoke-UniFiRequest -Endpoint "/hosts/$HostId"
         # Response may be the host object directly or wrapped in a data property
         $host = if ($response.data) { $response.data } else { $response }
-        if ($host -and $host.hostName) { return $host.hostName }
-        if ($host -and $host.name)     { return $host.name }
+        # Primary: reportedState.name is the human-readable console name
+        if ($host -and $host.reportedState -and $host.reportedState.name) { return $host.reportedState.name }
+        # Fallbacks
+        if ($host -and $host.hostName)                                     { return $host.hostName }
+        if ($host -and $host.name)                                         { return $host.name }
         return $null
     }
     catch {
