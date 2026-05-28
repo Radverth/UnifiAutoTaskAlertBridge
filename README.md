@@ -179,15 +179,18 @@ Run this **before enabling the live scheduler** to verify connectivity and inspe
 
 ### In Datto RMM
 
-Create a one-off Component Job run using the same component. In the **Script Arguments** field add:
+Add `TEST_MODE` as a temporary job variable, run the job once manually, then remove it to return to normal operation.
 
-```
-# Dump first alert from any site
--TestMode
+| Variable | Value | Effect |
+|---|---|---|
+| `TEST_MODE` | `1` | Activates test mode — no tickets created, no dedup writes |
+| `TEST_SITE` | `AFF001_A1 Taxis` | Optional — restricts the test to one named site |
 
-# Dump first alert from a specific site
--TestMode -TestSite "AFF001_A1 Taxis"
-```
+1. Open the job in Datto RMM → **Variables** tab
+2. Add `TEST_MODE` = `1` (and optionally `TEST_SITE` = the site display name)
+3. Run the job once manually
+4. Check stdout for the JSON output
+5. **Remove `TEST_MODE`** before the scheduler runs again
 
 The full alert JSON appears in the job stdout log:
 

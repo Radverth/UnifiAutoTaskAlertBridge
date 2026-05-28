@@ -36,6 +36,12 @@ param(
 
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass -Force
 
+# Allow test mode to be activated via Datto RMM job variables when script
+# arguments are unavailable. Job variable takes effect only if the switch
+# was not already set on the command line.
+if (-not $TestMode -and $env:TEST_MODE -in @('1', 'true', 'yes')) { $TestMode = $true }
+if (-not $TestSite -and $env:TEST_SITE)                            { $TestSite = $env:TEST_SITE }
+
 # ---------------------------------------------------------------------------
 #region CONFIG
 # ---------------------------------------------------------------------------
