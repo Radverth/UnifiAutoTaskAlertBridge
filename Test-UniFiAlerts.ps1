@@ -100,32 +100,6 @@ catch {
 }
 
 # ---------------------------------------------------------------------------
-# Step 1b — List consoles (shows console IDs — copy the one you need)
-# ---------------------------------------------------------------------------
-
-Write-Section 'STEP 1b — Your Console IDs'
-
-try {
-    $consolesResponse = Invoke-UniFiRequest -Uri "$UNIFI_BASE_URL/ea/consoles"
-    if ($consolesResponse.data -and $consolesResponse.data.Count -gt 0) {
-        Write-Ok "$($consolesResponse.data.Count) console(s) found:"
-        $consolesResponse.data | ForEach-Object {
-            Write-Host "    Console ID : $($_.id)" -ForegroundColor Yellow
-            Write-Host "    Name       : $($_.name)" -ForegroundColor White
-            Write-Host ''
-        }
-        Write-Info "Copy the Console ID above into `$UNIFI_CONSOLE_ID at the top of this script."
-    }
-    else {
-        Write-Warn 'No consoles returned — your API key may not have console access.'
-    }
-}
-catch {
-    Write-Warn "Could not list consoles (non-fatal): $_"
-    Write-Info "Set UNIFI_CONSOLE_ID manually from: https://unifi.ui.com/consoles/{THIS_PART}/network/default/dashboard"
-}
-
-# ---------------------------------------------------------------------------
 # Step 2 — List sites
 # ---------------------------------------------------------------------------
 
@@ -134,11 +108,11 @@ Write-Section 'STEP 2 — Sites'
 $sites = $sitesResponse.data
 
 if ($TEST_SITE -ne '') {
-    $sites = $sites | Where-Object { $_.name -eq $TEST_SITE }
+    $sites = $sites | Where-Object { $_.meta.desc -eq $TEST_SITE }
     if ($sites.Count -eq 0) {
         Write-Fail "No site found matching '$TEST_SITE'"
         Write-Info "Available sites:"
-        $sitesResponse.data | ForEach-Object { Write-Info "  $($_.name)  (id: $($_.siteId))" }
+        $sitesResponse.data | ForEach-Object { Write-Info "  $($_.meta.desc)  (siteId: $($_.siteId)  network: $($_.meta.name))" }
         exit 1
     }
     Write-Ok "Filtered to site: $TEST_SITE"
@@ -148,10 +122,10 @@ else {
 }
 
 $sites | ForEach-Object {
-    Write-Host "    $($_.name)  (siteId: $($_.siteId))" -ForegroundColor White
+    Write-Host "    $($_.meta.desc)  (network: $($_.meta.name)  siteId: $($_.siteId))" -ForegroundColor White
 }
 
-# Dump raw fields of the first site — helps identify the correct ID for the alarm endpoint
+# Dump raw fields of the first site
 Write-Host ''
 Write-Host '  Raw fields from first site object:' -ForegroundColor DarkGray
 $sites[0].PSObject.Properties | ForEach-Object {
@@ -168,14 +142,14 @@ $cutoff    = if ($MAX_AGE_HOURS -gt 0) { (Get-Date).ToUniversalTime().AddHours(-
 $allAlerts = @()
 
 foreach ($site in $sites) {
-    $siteId   = $site.siteId
-    $siteName = $site.name
+    # Display name is in meta.desc; network path identifier is in meta.name (e.g. "default")
+    $siteName  = $site.meta.desc
+    $networkId = $site.meta.name
 
-    # Resolve the console ID: prefer the field on the site object itself so multi-console
-    # setups work without any manual config. Fall back to the value set at the top.
-    $consoleId = if ($site.consoleId) { $site.consoleId }
-                 elseif ($site.hostId) { $site.hostId }
-                 else { $UNIFI_CONSOLE_ID }
+    # Console ID is in hostId but carries a colon-delimited suffix — strip it.
+    # e.g. "8bf15ed8-0c71-4ff3-887f-85e135be11d0:988314760" → "8bf15ed8-0c71-4ff3-887f-85e135be11d0"
+    $rawHostId = if ($site.hostId) { $site.hostId } else { $UNIFI_CONSOLE_ID }
+    $consoleId = ($rawHostId -split ':')[0]
 
     if (-not $consoleId) {
         Write-Fail "[$siteName]  Cannot determine console ID — set UNIFI_CONSOLE_ID at the top of this script."
@@ -183,7 +157,7 @@ foreach ($site in $sites) {
     }
 
     try {
-        $eventUri = "$UNIFI_BASE_URL/v1/consoles/$consoleId/network/$siteId/events"
+        $eventUri = "$UNIFI_BASE_URL/v1/consoles/$consoleId/network/$networkId/events"
         Write-Info "Fetching: $eventUri"
         $response   = Invoke-UniFiRequest -Uri $eventUri
         $unarchived = @($response.data | Where-Object { $NEGATIVE_KEYS -contains $_.key })
@@ -208,7 +182,6 @@ foreach ($site in $sites) {
     catch {
         Write-Fail "[$siteName]  Could not fetch events: $($_)"
         Write-Warn "  URL tried: $eventUri"
-        Write-Warn "  Console ID used: $consoleId  (from: $(if ($site.consoleId) {'site.consoleId'} elseif ($site.hostId) {'site.hostId'} else {'UNIFI_CONSOLE_ID fallback'}))"
     }
 }
 

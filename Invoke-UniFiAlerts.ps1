@@ -228,7 +228,7 @@ function Get-UniFiSites {
     $sites = $response.data
 
     if ($Script:UniFiSiteFilter.Count -gt 0) {
-        $sites = $sites | Where-Object { $Script:UniFiSiteFilter -contains $_.name }
+        $sites = $sites | Where-Object { $Script:UniFiSiteFilter -contains $_.meta.desc }
         Write-Log -Level Info -Message "Site filter applied — $($sites.Count) site(s) matched"
     }
 
@@ -252,22 +252,21 @@ function Get-UniFiAlerts {
     $allAlerts = @()
 
     foreach ($site in $Sites) {
-        $siteId   = $site.siteId  # UUID used in API paths (cloud API)
-        $siteName = $site.name    # Human-readable description e.g. AFF001_A1 Taxis
+        # Display name is in meta.desc; the network path identifier is in meta.name (e.g. "default")
+        $siteName  = $site.meta.desc
+        $networkId = $site.meta.name
 
-        # Resolve console ID from the site object itself; fall back to the job variable.
-        # Each site in /ea/sites carries its own consoleId so multi-console setups
-        # work without any extra configuration.
-        $consoleId = if ($site.consoleId) { $site.consoleId }
-                     elseif ($site.hostId) { $site.hostId }
-                     else { $Script:UniFiConsoleId }
+        # Console ID is in hostId with a colon-delimited suffix that must be stripped.
+        # e.g. "8bf15ed8-0c71-4ff3-887f-85e135be11d0:988314760" → "8bf15ed8-0c71-4ff3-887f-85e135be11d0"
+        $rawHostId = if ($site.hostId) { $site.hostId } else { $Script:UniFiConsoleId }
+        $consoleId = ($rawHostId -split ':')[0]
 
         if (-not $consoleId) {
             Write-Log -Level Warning -Message "Site '$siteName': cannot determine console ID — set UNIFI_CONSOLE_ID job variable as fallback. Skipping."
             continue
         }
 
-        $uri = "$($Session.BaseUrl)/v1/consoles/$consoleId/network/$siteId/events"
+        $uri = "$($Session.BaseUrl)/v1/consoles/$consoleId/network/$networkId/events"
 
         try {
             $response = Invoke-UniFiRequest -Uri $uri -ApiKey $Session.ApiKey
@@ -293,9 +292,9 @@ function Get-UniFiAlerts {
                     }
                 }
 
-                # Annotate with site display name, site ID, and console ID for downstream processing
+                # Annotate with display name, network path id, and console id for downstream processing
                 $alert | Add-Member -MemberType NoteProperty -Name 'site_name'   -Value $siteName   -Force
-                $alert | Add-Member -MemberType NoteProperty -Name 'site_id'     -Value $siteId     -Force
+                $alert | Add-Member -MemberType NoteProperty -Name 'site_id'     -Value $networkId  -Force
                 $alert | Add-Member -MemberType NoteProperty -Name 'console_id'  -Value $consoleId  -Force
                 $siteAlerts += $alert
             }
@@ -1137,7 +1136,7 @@ try {
 
     # Optionally restrict to one site when -TestSite is supplied
     if ($TestSite -ne '') {
-        $sites = $sites | Where-Object { $_.name -eq $TestSite }
+        $sites = $sites | Where-Object { $_.meta.desc -eq $TestSite }
         if ($sites.Count -eq 0) {
             Write-Log -Level Warning -Message "No site found matching TestSite '$TestSite'"
             exit 0
