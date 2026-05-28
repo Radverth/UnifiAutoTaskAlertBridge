@@ -487,7 +487,7 @@ function Get-PrimaryContact {
                      else { '' }
             $email = if ($contact.emailAddress) { $contact.emailAddress } else { '' }
 
-            Write-Log -Level Info -Message "Primary contact for company $CompanyID: $name"
+            Write-Log -Level Info -Message "Primary contact for company ${CompanyID}: $name"
             return @{
                 ContactID = $contact.id
                 Name      = $name
@@ -501,7 +501,7 @@ function Get-PrimaryContact {
         }
     }
     catch {
-        Write-Log -Level Warning -Message "Primary contact lookup failed for company $CompanyID: $_"
+        Write-Log -Level Warning -Message "Primary contact lookup failed for company ${CompanyID}: $($_)"
         return $null
     }
 }
@@ -1061,7 +1061,7 @@ function Sync-ClosedTickets {
         }
         catch {
             # Non-fatal: one failed status check should never block other entries
-            Write-Log -Level Warning -Message "Could not check status of ticket $ticketId for alert $alertId: $_ — will retry next run"
+            Write-Log -Level Warning -Message "Could not check status of ticket $ticketId for alert ${alertId}: $($_) — will retry next run"
         }
     }
 
