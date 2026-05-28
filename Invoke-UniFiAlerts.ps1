@@ -92,6 +92,9 @@ $Config = @{
     # Use the resolved host name shown in [INFO] Host '...' -> '...' log lines (lowercased).
     SiteExclusions          = @(
         'affinity controller'
+        'andersons network'
+        'catering projects ltd'
+        'jpr farm - cartledge house'
     )
 
     # UniFi host name (lowercase) → Autotask company name
