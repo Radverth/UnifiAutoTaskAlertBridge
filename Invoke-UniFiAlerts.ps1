@@ -83,6 +83,7 @@ $Config = @{
     FirmwareExclusions      = @{
         'US24P250'  = @('7.2.123')   # USW Pro 24 PoE 250W
         'US8P150'   = @('7.2.123')   # USW 8 PoE 150W
+        'US8P60W'   = @('7.2.123')   # USW 8 60W
         'USMINI'    = @('7.2.123')   # USW Flex Mini
     }
 
@@ -629,14 +630,18 @@ function Invoke-AlertEvaluation {
     $offlineCount  = if ($counts -and $null -ne $counts.offlineDevice)  { [int]$counts.offlineDevice }  else { ($Devices | Where-Object { $_.status -eq 'offline' }).Count }
     $gatewayCount  = if ($counts -and $null -ne $counts.gatewayDevice)  { [int]$counts.gatewayDevice }  else { ($Devices | Where-Object { $_.isConsole -eq $true }).Count }
 
+    # Collect offline devices up front so Alert 1 and Alert 8 can share the list
+    $offlineDevices = @($Devices | Where-Object { $_.status -eq 'offline' })
+
     # Per-device alerts
     foreach ($device in $Devices) {
         $deviceName = if ($device.name)  { $device.name }
                       elseif ($device.model) { $device.model }
                       else { 'Unknown Device' }
 
-        # Alert 1: Device Offline
-        if ($device.status -eq 'offline') {
+        # Alert 1: Device Offline — only raised individually when just one device is offline.
+        # When multiple devices are offline the consolidated Alert 8 covers them all.
+        if ($device.status -eq 'offline' -and $offlineDevices.Count -eq 1) {
             $alerts.Add([pscustomobject]@{
                 AlertType  = 'DeviceOffline'
                 Priority   = 'Critical'
@@ -758,16 +763,26 @@ function Invoke-AlertEvaluation {
         })
     }
 
-    # Alert 8: Multiple Devices Offline — from statistics.counts.offlineDevice
-    if ($offlineCount -gt 1) {
+    # Alert 8: Multiple Devices Offline
+    # Use the local offline device list when available; fall back to the statistics count.
+    $multiOfflineCount = if ($offlineDevices.Count -gt 0) { $offlineDevices.Count } else { $offlineCount }
+    if ($multiOfflineCount -gt 1) {
+        # Build a device name list from the devices we actually enumerated
+        $offlineNameList = if ($offlineDevices.Count -gt 0) {
+            ($offlineDevices | ForEach-Object {
+                if ($_.name) { $_.name } elseif ($_.model) { $_.model } else { 'Unknown' }
+            }) -join ', '
+        } else { 'Unknown (device list unavailable)' }
+
         $alerts.Add([pscustomobject]@{
-            AlertType  = 'MultipleDevicesOffline'
-            Priority   = 'Critical'
-            Title      = "NETWORK OUTAGE -- ${siteName}: ${offlineCount} devices offline simultaneously"
-            SiteName   = $siteName
-            DeviceName = if ($gatewayDevice -and $gatewayDevice.name) { $gatewayDevice.name } else { 'Multiple' }
-            DeviceData = $gatewayDevice
-            SiteData   = $Site
+            AlertType        = 'MultipleDevicesOffline'
+            Priority         = 'Critical'
+            Title            = "NETWORK OUTAGE -- ${siteName}: ${multiOfflineCount} devices offline simultaneously"
+            SiteName         = $siteName
+            DeviceName       = if ($gatewayDevice -and $gatewayDevice.name) { $gatewayDevice.name } else { 'Multiple' }
+            DeviceData       = $gatewayDevice
+            SiteData         = $Site
+            OfflineNameList  = $offlineNameList
         })
     }
 
@@ -921,7 +936,10 @@ function Build-TicketDescription {
         'WanUptimeDegraded'            { "WAN uptime at site '$($Alert.SiteName)' has fallen below the acceptable threshold, indicating connectivity instability." }
         'CriticalNotificationsPresent' { "One or more critical notifications are present on the UniFi controller for site '$($Alert.SiteName)'." }
         'InternetIssuesDetected'       { "The UniFi controller has detected internet connectivity issues at site '$($Alert.SiteName)'." }
-        'MultipleDevicesOffline'       { "Multiple network devices are offline simultaneously at site '$($Alert.SiteName)', indicating a potential site-wide outage." }
+        'MultipleDevicesOffline'       {
+            $nameList = if ($Alert.OfflineNameList) { " Offline: $($Alert.OfflineNameList)." } else { '' }
+            "Multiple network devices are offline simultaneously at site '$($Alert.SiteName)', indicating a potential site-wide outage.$nameList"
+        }
         'NoGatewayDevice'              { "No gateway device is detected on site '$($Alert.SiteName)'. All network connectivity may be affected." }
         default                        { "An alert condition has been detected at site '$($Alert.SiteName)' requiring review." }
     }
