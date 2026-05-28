@@ -95,6 +95,7 @@ $Config = @{
         'andersons network'
         'catering projects ltd'
         'jpr farm - cartledge house'
+        'colin beaumont - home'
     )
 
     # UniFi host name (lowercase) → Autotask company name
@@ -102,7 +103,39 @@ $Config = @{
     # human-readable names shown in the UniFi console (e.g. 'client site name').
     # Run -TestMode to see the resolved host name for each site.
     SiteMapping             = @{
-        'default' = 'Affinity IT'
+        'wales parish council'              = ''
+        'royds mill'                        = ''
+        'support dogs - elsworth house'     = ''
+        'ftg - ho'                          = ''
+        'ranmoor health & safety'           = ''
+        'express coatings'                  = ''
+        'weston park - support centre'      = ''
+        'scott anson - home'                = ''
+        'scott anson - office'              = ''
+        'ford windows cloudkey+'            = ''
+        'sherwood-udm-pro'                  = ''
+        'a1 taxis - head office'            = ''
+        'thornberry - north anston'         = ''
+        'weston park - charity hub'         = ''
+        'wheel sets (uk) ltd'               = ''
+        'twelve trees meadowbrook manor'    = ''
+        'tsncloudkey+'                      = ''
+        'rejuvenated ltd'                   = ''
+        'cutlers hall'                      = ''
+        'riverlinco - ucg ultra'            = ''
+        'british silverware'                = ''
+        'connect financial solutions'       = ''
+        'thornberry - retford'              = ''
+        'nightingale centre'                = ''
+        'ftg - mels house'                  = ''
+        'john bowman'                       = ''
+        'iti networks - head office'        = ''
+        'weston park - glossop road'        = ''
+        'harland works'                     = ''
+        'hallam removals'                   = ''
+        'colin beaumont - home'             = ''
+        'heeley city farm'                  = ''
+        'weston park - cavendish centre'    = ''
     }
 }
 
@@ -1112,7 +1145,7 @@ function Resolve-CompanyAndContact {
     $siteNameLower = $SiteName.ToLower()
     $mappedCompanyName = $null
 
-    if ($Config.SiteMapping.ContainsKey($siteNameLower)) {
+    if ($Config.SiteMapping.ContainsKey($siteNameLower) -and $Config.SiteMapping[$siteNameLower]) {
         $mappedCompanyName = $Config.SiteMapping[$siteNameLower]
     }
     else {
