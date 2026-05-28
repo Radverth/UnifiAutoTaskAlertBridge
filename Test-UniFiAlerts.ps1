@@ -103,7 +103,14 @@ else {
 }
 
 $sites | ForEach-Object {
-    Write-Host "    $($_.name)  (id: $($_.siteId))" -ForegroundColor White
+    Write-Host "    $($_.name)  (siteId: $($_.siteId))" -ForegroundColor White
+}
+
+# Dump raw fields of the first site — helps identify the correct ID for the alarm endpoint
+Write-Host ''
+Write-Host '  Raw fields from first site object:' -ForegroundColor DarkGray
+$sites[0].PSObject.Properties | ForEach-Object {
+    Write-Host "    $($_.Name) = $($_.Value)" -ForegroundColor DarkGray
 }
 
 # ---------------------------------------------------------------------------
@@ -120,7 +127,9 @@ foreach ($site in $sites) {
     $siteName = $site.name
 
     try {
-        $response   = Invoke-UniFiRequest -Uri "$UNIFI_BASE_URL/proxy/network/api/s/$siteId/stat/alarm"
+        $alarmUri = "$UNIFI_BASE_URL/proxy/network/api/s/$siteId/stat/alarm"
+        Write-Info "Trying: $alarmUri"
+        $response   = Invoke-UniFiRequest -Uri $alarmUri
         $unarchived = @($response.data | Where-Object { $_.archived -eq $false })
 
         if ($cutoff) {
@@ -141,7 +150,9 @@ foreach ($site in $sites) {
         Write-Ok "[$siteName]  $($unarchived.Count) unarchived alert(s)"
     }
     catch {
-        Write-Fail "[$siteName]  Could not fetch alerts: $_"
+        Write-Fail "[$siteName]  Could not fetch alerts: $($_)"
+        Write-Warn "  URL tried: $UNIFI_BASE_URL/proxy/network/api/s/$siteId/stat/alarm"
+        Write-Warn "  Check the raw site fields above — the correct ID for the path may not be 'siteId'"
     }
 }
 
