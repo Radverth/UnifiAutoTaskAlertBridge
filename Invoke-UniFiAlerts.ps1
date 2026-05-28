@@ -1223,6 +1223,22 @@ function Invoke-Main {
 
     Write-Host "[INFO] Found $($sites.Count) site(s)." -ForegroundColor Cyan
 
+    # The /v1/sites API returns one entry per network, not per host. A controller managing
+    # multiple networks returns multiple entries sharing the same hostId. Deduplicate by
+    # hostId so each physical host is only processed once.
+    $seenHostIds = [System.Collections.Generic.HashSet[string]]::new()
+    $uniqueSites = [System.Collections.Generic.List[object]]::new()
+    foreach ($site in $sites) {
+        $hid = if ($site.hostId) { $site.hostId } else { $null }
+        if ($hid) {
+            if ($seenHostIds.Add($hid)) { $uniqueSites.Add($site) }
+        } else {
+            $uniqueSites.Add($site)
+        }
+    }
+    Write-Host "[INFO] $($uniqueSites.Count) unique host(s) to process after deduplication." -ForegroundColor Cyan
+    $sites = $uniqueSites
+
     # Build hostId → hostName lookup using GET /v1/hosts/{id}.
     # This gives the real human-readable console name rather than the internal meta slug.
     Write-Host "[INFO] Resolving host names from UniFi API..." -ForegroundColor Cyan
