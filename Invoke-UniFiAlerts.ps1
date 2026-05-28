@@ -897,9 +897,6 @@ $ts
 RECOMMENDED MITIGATION
 ======================
 $mitigationSteps
-FURTHER INFORMATION
-===================
-https://help.ui.com/hc/en-us/categories/200320654-UniFi-Network
 "@
 
     return $description
