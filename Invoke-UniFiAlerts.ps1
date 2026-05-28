@@ -67,6 +67,16 @@ $Config = @{
     # The -TestMode switch takes precedence if both are set.
     TestMode                = $false
 
+    # Firmware versions to suppress per device shortname.
+    # If a device is intentionally pinned to a specific version, add it here to prevent
+    # firmware update alerts. Keys are the shortname field from the UniFi device object
+    # (e.g. 'US24P250'). Run -TestMode to see the shortname for each device.
+    FirmwareExclusions      = @{
+        'US24P250'  = @('7.2.123')   # USW Pro 24 PoE 250W
+        'US8P150'   = @('7.2.123')   # USW 8 PoE 150W
+        'USMINI'    = @('7.2.123')   # USW Flex Mini
+    }
+
     # UniFi host name (lowercase) → Autotask company name
     # Keys are the hostName values returned by GET /v1/hosts/{id} — these are the
     # human-readable names shown in the UniFi console (e.g. 'client site name').
@@ -631,15 +641,25 @@ function Invoke-AlertEvaluation {
 
         # Alert 2: Firmware Update Available
         if ($device.firmwareStatus -and $device.firmwareStatus -ne 'upToDate') {
-            $alerts.Add([pscustomobject]@{
-                AlertType  = 'FirmwareUpdateAvailable'
-                Priority   = 'High'
-                Title      = "MAINTENANCE REQUIRED -- ${siteName}: Firmware update available for ${deviceName}"
-                SiteName   = $siteName
-                DeviceName = $deviceName
-                DeviceData = $device
-                SiteData   = $Site
-            })
+            $excludedVersions = if ($device.shortname -and $Config.FirmwareExclusions -and $Config.FirmwareExclusions.ContainsKey($device.shortname)) {
+                $Config.FirmwareExclusions[$device.shortname]
+            } else { @() }
+            $firmwareExcluded = $device.version -and ($excludedVersions -contains $device.version)
+
+            if (-not $firmwareExcluded) {
+                $alerts.Add([pscustomobject]@{
+                    AlertType  = 'FirmwareUpdateAvailable'
+                    Priority   = 'High'
+                    Title      = "MAINTENANCE REQUIRED -- ${siteName}: Firmware update available for ${deviceName}"
+                    SiteName   = $siteName
+                    DeviceName = $deviceName
+                    DeviceData = $device
+                    SiteData   = $Site
+                })
+            }
+            else {
+                Write-Host "[INFO] Firmware alert suppressed for '$deviceName' ($($device.shortname) v$($device.version)) — version excluded in FirmwareExclusions" -ForegroundColor Cyan
+            }
         }
     }
 
