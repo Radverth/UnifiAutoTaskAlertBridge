@@ -64,31 +64,6 @@ function Invoke-UniFiRequest {
     Invoke-RestMethod @params
 }
 
-function Get-AccountPrefix {
-    param([string]$SiteName)
-    if ($SiteName -notmatch '_') { return $null }
-    $prefix = $SiteName.Split('_')[0].Trim()
-    if ($prefix -eq '') { return $null }
-    return $prefix
-}
-
-$AlertTitleMap = @{
-    'EVT_AP_Disconnected'     = 'AP Disconnected'
-    'EVT_AP_Connected'        = 'AP Reconnected'
-    'EVT_AP_Restarted'        = 'AP Restarted'
-    'EVT_AP_UpgradeScheduled' = 'AP Firmware Upgrade Scheduled'
-    'EVT_SW_Disconnected'     = 'Switch Disconnected'
-    'EVT_SW_Connected'        = 'Switch Reconnected'
-    'EVT_GW_Disconnected'     = 'Gateway Disconnected'
-    'EVT_GW_Connected'        = 'Gateway Reconnected'
-    'EVT_GW_WANTransitioned'  = 'WAN Failover'
-    'EVT_GW_VPNDown'          = 'VPN Tunnel Down'
-    'EVT_GW_VPNUp'            = 'VPN Tunnel Up'
-    'EVT_LTE_Disconnected'    = 'LTE Link Disconnected'
-    'EVT_LTE_Connected'       = 'LTE Link Reconnected'
-    'EVT_CLIENT_Roam'         = 'Client Roam'
-    'EVT_CLIENT_Blocked'      = 'Client Blocked'
-}
 
 # ---------------------------------------------------------------------------
 # Step 1 — Validate API key
@@ -128,10 +103,7 @@ else {
 }
 
 $sites | ForEach-Object {
-    $prefix = Get-AccountPrefix -SiteName $_.name
-    $prefixDisplay = if ($prefix) { $prefix } else { '(no underscore — will be skipped)' }
-    Write-Host "    $($_.name)" -NoNewline
-    Write-Host "   prefix: $prefixDisplay" -ForegroundColor DarkGray
+    Write-Host "    $($_.name)  (id: $($_.siteId))" -ForegroundColor White
 }
 
 # ---------------------------------------------------------------------------
@@ -186,32 +158,19 @@ if ($allAlerts.Count -eq 0) {
 Write-Section "STEP 4 — Alert Detail ($($allAlerts.Count) total)"
 
 foreach ($alert in $allAlerts) {
-    $siteName  = $alert._site_name
-    $prefix    = Get-AccountPrefix -SiteName $siteName
-    $eventKey  = if ($alert.key) { $alert.key } else { 'Unknown' }
-    $titleType = if ($AlertTitleMap.ContainsKey($eventKey)) { $AlertTitleMap[$eventKey] } else { "Unknown Event ($eventKey)" }
-    $device    = if ($alert.ap_name)  { $alert.ap_name }
-                 elseif ($alert.sw_name) { $alert.sw_name }
-                 elseif ($alert.gw_name) { $alert.gw_name }
-                 elseif ($alert.ap)      { $alert.ap }
-                 elseif ($alert.sw)      { $alert.sw }
-                 else { 'Unknown Device' }
+    $device = if ($alert.ap_name)     { $alert.ap_name }
+              elseif ($alert.sw_name) { $alert.sw_name }
+              elseif ($alert.gw_name) { $alert.gw_name }
+              elseif ($alert.ap)      { $alert.ap }
+              elseif ($alert.sw)      { $alert.sw }
+              else { 'Unknown Device' }
 
     Write-Host ''
     Write-Host "  Alert ID : $($alert._id)" -ForegroundColor White
-    Write-Host "  Site     : $siteName" -ForegroundColor White
+    Write-Host "  Site     : $($alert._site_name)" -ForegroundColor White
     Write-Host "  Device   : $device" -ForegroundColor White
-    Write-Host "  Event    : $eventKey" -ForegroundColor White
+    Write-Host "  Event    : $($alert.key)" -ForegroundColor White
     Write-Host "  Time     : $($alert.datetime)" -ForegroundColor White
-
-    if ($prefix) {
-        $ticketTitle = "[UniFi] $titleType - $device ($prefix / <AutoTask company name>)"
-        Write-Host "  Prefix   : $prefix" -ForegroundColor Green
-        Write-Host "  Ticket   : $ticketTitle" -ForegroundColor Green
-    }
-    else {
-        Write-Warn "  Prefix   : none — site name has no underscore, alert would be SKIPPED"
-    }
 }
 
 # ---------------------------------------------------------------------------
