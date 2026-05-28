@@ -26,8 +26,22 @@ $UNIFI_API_KEY     = 'YOUR-API-KEY-HERE'
 # Optional: set to a site display name to test a single site, or leave blank for all sites
 $TEST_SITE         = ''
 
-# Maximum alert age in hours (0 = show all alerts regardless of age)
+# Maximum alert age in hours (0 = show all events regardless of age)
 $MAX_AGE_HOURS     = 0
+
+# Only these event keys are shown — everything else (client connects, roams, etc.) is excluded.
+# Add or remove keys here to tune what counts as a negative event.
+$NEGATIVE_KEYS = @(
+    'EVT_AP_Disconnected',
+    'EVT_AP_Restarted',
+    'EVT_AP_UpgradeScheduled',
+    'EVT_SW_Disconnected',
+    'EVT_SW_Restarted',
+    'EVT_GW_Disconnected',
+    'EVT_GW_WANTransitioned',
+    'EVT_GW_VPNDown',
+    'EVT_LTE_Disconnected'
+)
 
 # ============================================================
 # END OF CONFIG — nothing below needs changing
@@ -130,7 +144,7 @@ foreach ($site in $sites) {
         $alarmUri = "$UNIFI_BASE_URL/proxy/network/api/s/$siteId/stat/event"
         Write-Info "Trying: $alarmUri"
         $response   = Invoke-UniFiRequest -Uri $alarmUri
-        $unarchived = @($response.data)
+        $unarchived = @($response.data | Where-Object { $NEGATIVE_KEYS -contains $_.key })
 
         if ($cutoff) {
             $unarchived = @($unarchived | Where-Object {
