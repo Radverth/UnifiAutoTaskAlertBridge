@@ -1141,11 +1141,9 @@ function Resolve-CompanyAndContact {
         [string]$SiteName
     )
 
-    # Step 1: lowercase site name, look up in SiteMapping
-    $siteNameLower = $SiteName.ToLower()
+    # Step 1: lowercase and trim site name, look up in SiteMapping
+    $siteNameLower = $SiteName.Trim().ToLower()
     $mappedCompanyName = $null
-
-    Write-Host "[DEBUG] SiteMapping lookup: '$siteNameLower' (found=$($Config.SiteMapping.ContainsKey($siteNameLower)))" -ForegroundColor DarkGray
 
     if ($Config.SiteMapping.ContainsKey($siteNameLower) -and $Config.SiteMapping[$siteNameLower]) {
         $mappedCompanyName = $Config.SiteMapping[$siteNameLower]
@@ -1256,10 +1254,10 @@ function Invoke-Main {
         # Prefer hostName from /v1/hosts lookup; fall back to meta.desc / meta.name
         $siteDisplayName = $null
         if ($hostId -and $hostNameMap.ContainsKey($hostId) -and $hostNameMap[$hostId]) {
-            $siteDisplayName = $hostNameMap[$hostId]
+            $siteDisplayName = $hostNameMap[$hostId].Trim()
         }
-        if (-not $siteDisplayName -and $site.meta -and $site.meta.desc)  { $siteDisplayName = $site.meta.desc }
-        if (-not $siteDisplayName -and $site.meta -and $site.meta.name)  { $siteDisplayName = $site.meta.name }
+        if (-not $siteDisplayName -and $site.meta -and $site.meta.desc)  { $siteDisplayName = $site.meta.desc.Trim() }
+        if (-not $siteDisplayName -and $site.meta -and $site.meta.name)  { $siteDisplayName = $site.meta.name.Trim() }
         if (-not $siteDisplayName) { $siteDisplayName = "Site[$sitesChecked]" }
 
         # Skip sites listed in SiteExclusions (case-insensitive)
