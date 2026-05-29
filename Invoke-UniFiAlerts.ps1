@@ -259,15 +259,13 @@ function Get-UniFiDevices {
 
         try {
             $response = Invoke-UniFiRequest -Endpoint '/devices' -QueryParams $params
-            if ($response.data) {
-                foreach ($device in $response.data) {
-                    $allDevices.Add($device)
-                }
-            }
-            elseif ($response -is [array]) {
-                foreach ($device in $response) {
-                    $allDevices.Add($device)
-                }
+            # /v1/devices returns host wrapper objects: { hostId, hostName, devices: [...] }
+            # Unpack the nested devices array from each wrapper.
+            $wrappers = if ($response.data) { $response.data } elseif ($response -is [array]) { $response } else { @() }
+            foreach ($wrapper in $wrappers) {
+                if ($wrapper.hostId -and $wrapper.hostId -ne $HostId) { continue }
+                $devs = if ($wrapper.devices) { $wrapper.devices } elseif ($wrapper.mac) { @($wrapper) } else { @() }
+                foreach ($d in $devs) { $allDevices.Add($d) }
             }
             $nextToken = if ($response.nextToken) { $response.nextToken } else { $null }
         }

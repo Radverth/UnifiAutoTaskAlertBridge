@@ -267,11 +267,15 @@ function Invoke-UniFiRequest {
 }
 
 function Get-HostName {
+    # hostName is not present on /v1/hosts/{id} — it exists only in the /v1/devices
+    # response wrapper (data[].hostName). Fetch one page of devices to read it.
     param([string]$HostId)
     try {
-        $resp = Invoke-UniFiRequest -Endpoint "/hosts/$HostId"
-        $obj  = if ($resp.data) { $resp.data } else { $resp }
-        if ($obj -and $obj.hostName) { return $obj.hostName }
+        $encodedId = [System.Uri]::EscapeDataString($HostId)
+        $resp = Invoke-UniFiRequest -Endpoint "/devices?hostIds[]=$encodedId&pageSize=1"
+        $wrappers = if ($resp.data) { $resp.data } else { @() }
+        $wrapper  = $wrappers | Where-Object { $_.hostId -eq $HostId } | Select-Object -First 1
+        if ($wrapper -and $wrapper.hostName) { return $wrapper.hostName }
     }
     catch { }
     return $HostId
@@ -465,16 +469,10 @@ foreach ($entry in $allEntries) {
 
         $allDevices = @(Get-Devices -HostId $hostId)
 
-        if ($networkId) {
-            $networkDevices = @($allDevices | Where-Object {
-                ($_.networkId -and $_.networkId -eq $networkId) -or
-                ($_.siteId    -and $_.siteId    -eq $networkId)
-            })
-            $devices = if ($networkDevices.Count -gt 0) { $networkDevices } else { $allDevices }
-        }
-        else {
-            $devices = $allDevices
-        }
+        # The cloud API returns all devices for a host with no per-device network/site ID,
+        # so we cannot filter devices by NetworkId at the device level. Statistics (offline
+        # count, TX retry, WAN uptime) are correctly scoped to the network via Resolve-Network.
+        $devices = $allDevices
 
         $stats  = if ($site -and $site.statistics)    { $site.statistics }   else { $null }
         $pct    = if ($stats -and $stats.percentages) { $stats.percentages } else { $null }
