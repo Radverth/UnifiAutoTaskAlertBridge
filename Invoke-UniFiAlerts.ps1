@@ -1145,6 +1145,8 @@ function Resolve-CompanyAndContact {
     $siteNameLower = $SiteName.ToLower()
     $mappedCompanyName = $null
 
+    Write-Host "[DEBUG] SiteMapping lookup: '$siteNameLower' (found=$($Config.SiteMapping.ContainsKey($siteNameLower)))" -ForegroundColor DarkGray
+
     if ($Config.SiteMapping.ContainsKey($siteNameLower) -and $Config.SiteMapping[$siteNameLower]) {
         $mappedCompanyName = $Config.SiteMapping[$siteNameLower]
     }
