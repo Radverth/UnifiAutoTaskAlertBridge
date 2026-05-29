@@ -24,9 +24,16 @@ $ErrorActionPreference = 'Continue'
 
 #region CONFIGURATION
 
-$UnifiApiBase       = 'https://api.ui.com/v1'
-$UnifiApiKey        = $env:CS_UnifiApiKey
-$SiteKeysRaw        = $env:CS_UnifiSiteKeys
+$UnifiApiBase = 'https://api.ui.com/v1'
+
+# API key — set directly here for now.
+# To switch to a Datto RMM global variable later, comment out the line below
+# and uncomment the global variable line beneath it.
+$UnifiApiKey  = 'YOUR_API_KEY_HERE'
+# $UnifiApiKey = $env:CS_UnifiApiKey   # <- uncomment when using Datto global variable
+
+# Site variable — always read from the Datto RMM site variable
+$SiteKeysRaw  = $env:CS_UnifiSiteKeys
 
 # Alert thresholds — mirror your main script values
 $TxRetryWarningPct   = 50.0
@@ -37,8 +44,8 @@ $WanUptimeWarningPct = 99.0
 
 #region VALIDATION
 
-if (-not $UnifiApiKey) {
-    Write-Host 'CONFIGURATION ERROR: Site variable UnifiApiKey is not set.'
+if (-not $UnifiApiKey -or $UnifiApiKey -eq 'YOUR_API_KEY_HERE') {
+    Write-Host 'CONFIGURATION ERROR: UnifiApiKey is not set. Add your API key to the script or configure the Datto global variable.'
     exit 2
 }
 
