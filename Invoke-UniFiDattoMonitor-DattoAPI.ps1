@@ -2,24 +2,28 @@
 .SYNOPSIS
     UniFi network health monitor for Datto RMM — proactive group edition.
 .DESCRIPTION
-    Runs on a single central machine. Authenticates with the Datto RMM API,
-    queries all sites in a specified dynamic group (your proactive service group),
-    reads the UnifiSiteKeys site variable from each, then queries the UniFi Cloud
-    API for every host/network and raises a Datto RMM alert if any issues are found.
+    Runs on a single central machine with the Datto RMM agent installed.
+    Authenticates with the Datto RMM API, queries all devices in a specified
+    filter/dynamic group (your proactive service group) to discover which sites
+    are in scope, reads the UnifiSiteKeys site variable from each of those sites,
+    then queries the UniFi Cloud API for every host/network and raises a Datto
+    RMM alert if any issues are found.
 
-    Sites that are NOT in the dynamic group are completely ignored — no UniFi
-    queries are made for them.
+    Sites that are NOT in the dynamic group are completely ignored.
 
     Configuration — edit the CONFIGURATION region below:
-        $DattoApiUrl    — your Datto RMM API URL (e.g. https://zinfandel-api.centrastage.net)
-        $DattoApiKey    — API key from Datto RMM Setup > API Configuration
-        $DattoApiSecret — API secret from the same page
-        $DattoFilterId  — numeric ID of the dynamic group (proactive service group)
+        $DattoApiUrl    — your Datto RMM API base URL
+                          Format: https://{zone}-api.centrastage.net
+                          Zones: pinotage, merlot, concord, vidal, zinfandel, syrah
+        $DattoApiKey    — API key from Datto RMM Setup > Users > API Keys
+        $DattoApiSecret — API secret key from the same page
+        $DattoFilterId  — numeric ID of the filter/dynamic group (proactive service group)
+                          Find it in Datto RMM: Manage > Filters — ID shown in the URL
         $UnifiApiKey    — UniFi Cloud API key from account.ui.com
 
     UnifiSiteKeys site variable format (set on each Datto RMM site):
         Single host          : HostID
-        Host with network    : HostId|NetworkId
+        Host + specific net  : HostId|NetworkId
         Multiple entries     : HostId1,HostId2|NetworkId2,HostId3
 
     Exit codes:
@@ -33,14 +37,16 @@ $ErrorActionPreference = 'Continue'
 
 #region CONFIGURATION
 
-$DattoApiUrl    = 'https://zinfandel-api.centrastage.net'   # Your Datto RMM API URL
+# Your Datto RMM zone URL — e.g. https://zinfandel-api.centrastage.net
+# Check your Datto RMM browser URL to identify your zone.
+$DattoApiUrl    = 'https://zinfandel-api.centrastage.net'
 $DattoApiKey    = 'YOUR_DATTO_API_KEY_HERE'
 $DattoApiSecret = 'YOUR_DATTO_API_SECRET_HERE'
-$DattoFilterId  = 0   # <-- Set to your proactive service group / dynamic group ID
+$DattoFilterId  = 0   # <-- numeric ID of your proactive service filter/dynamic group
 
 $UnifiApiBase   = 'https://api.ui.com/v1'
 $UnifiApiKey    = 'YOUR_UNIFI_API_KEY_HERE'
-# $UnifiApiKey  = $env:CS_UnifiApiKey   # <- uncomment when using Datto global variable
+# $UnifiApiKey  = $env:CS_UnifiApiKey   # <- uncomment to use a Datto global variable instead
 
 # Alert thresholds
 $TxRetryWarningPct   = 50.0
@@ -67,7 +73,7 @@ if (-not $DattoApiSecret -or $DattoApiSecret -eq 'YOUR_DATTO_API_SECRET_HERE') {
     exit 1
 }
 if ($DattoFilterId -eq 0) {
-    Write-DattoResult -Status 'CONFIGURATION ERROR: DattoFilterId is not set. Set it to your proactive service dynamic group ID.'
+    Write-DattoResult -Status 'CONFIGURATION ERROR: DattoFilterId is not set. Set it to your proactive service filter ID.'
     exit 1
 }
 if (-not $UnifiApiKey -or $UnifiApiKey -eq 'YOUR_UNIFI_API_KEY_HERE') {
@@ -82,11 +88,15 @@ if (-not $UnifiApiKey -or $UnifiApiKey -eq 'YOUR_UNIFI_API_KEY_HERE') {
 function Get-DattoBearerToken {
     [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
 
-    $tokenUrl = "$DattoApiUrl/auth/oauth/token"
-    $body     = "grant_type=password&username=$([System.Uri]::EscapeDataString($DattoApiKey))&password=$([System.Uri]::EscapeDataString($DattoApiSecret))"
+    # Password grant — token endpoint is at /auth/oauth/token (NOT under /api/)
+    # Requires HTTP Basic auth with the literal credentials public-client:public
+    $tokenUrl  = "$DattoApiUrl/auth/oauth/token"
+    $body      = "grant_type=password&username=$([System.Uri]::EscapeDataString($DattoApiKey))&password=$([System.Uri]::EscapeDataString($DattoApiSecret))"
+    $basicCred = [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes('public-client:public'))
 
     $wc = [System.Net.WebClient]::new()
     $wc.Headers.Add('Content-Type', 'application/x-www-form-urlencoded')
+    $wc.Headers.Add('Authorization', "Basic $basicCred")
 
     try {
         $raw  = $wc.UploadString($tokenUrl, 'POST', $body)
@@ -99,7 +109,7 @@ function Get-DattoBearerToken {
     catch [System.Net.WebException] {
         $status = $null
         if ($_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode }
-        throw "Datto RMM authentication failed (HTTP $status): $($_.Exception.Message)"
+        throw "Datto RMM authentication failed (HTTP $status). Check DattoApiKey and DattoApiSecret."
     }
     catch {
         throw "Datto RMM authentication error: $($_.Exception.Message)"
@@ -115,6 +125,7 @@ function Invoke-DattoRequest {
 
     [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
 
+    # All API endpoints are under /api/v2 on the zone base URL
     $uri = "$DattoApiUrl/api/v2$Endpoint"
     if ($QueryParams.Count -gt 0) {
         $qs  = ($QueryParams.GetEnumerator() | ForEach-Object {
@@ -135,6 +146,9 @@ function Invoke-DattoRequest {
     catch [System.Net.WebException] {
         $status = $null
         if ($_.Exception.Response) { $status = [int]$_.Exception.Response.StatusCode }
+        if ($status -eq 429) {
+            throw "Datto API rate limit hit (HTTP 429). Try again shortly."
+        }
         throw "Datto API error (HTTP $status) for '$Endpoint': $($_.Exception.Message)"
     }
     catch {
@@ -143,18 +157,19 @@ function Invoke-DattoRequest {
 }
 
 function Get-DattoSitesInFilter {
-    # Returns all sites (accounts) that contain at least one device matching the filter.
-    # Datto dynamic group filters target devices; we get distinct site UIDs from the device list.
+    # Queries /v2/account/devices with filterId to get all devices in the filter,
+    # then returns distinct site UIDs and names from those devices.
+    # There is no direct "list devices in filter" endpoint — filterId is a query param
+    # on the standard device listing endpoint and exclusively determines results.
     param([string]$Token)
 
-    $siteUids  = [System.Collections.Generic.HashSet[string]]::new()
-    $siteMap   = @{}   # uid -> site object
-    $pageNum   = 1
-    $pageSize  = 250
+    $siteUids = [System.Collections.Generic.HashSet[string]]::new()
+    $siteMap  = @{}
+    $page     = 0   # Datto API pagination is zero-based
 
     do {
-        $resp    = Invoke-DattoRequest -Token $Token -Endpoint "/filter/$DattoFilterId/devices" `
-                       -QueryParams @{ page = $pageNum; max = $pageSize }
+        $resp    = Invoke-DattoRequest -Token $Token -Endpoint '/account/devices' `
+                       -QueryParams @{ filterId = $DattoFilterId; page = $page; max = 250 }
         $devices = if ($resp.devices) { $resp.devices } elseif ($resp -is [array]) { $resp } else { @() }
 
         foreach ($dev in $devices) {
@@ -167,15 +182,17 @@ function Get-DattoSitesInFilter {
             }
         }
 
-        $totalPages = if ($resp.pageDetails -and $resp.pageDetails.totalPages) { [int]$resp.pageDetails.totalPages } else { 1 }
-        $pageNum++
-    } while ($pageNum -le $totalPages)
+        $nextPageUrl = if ($resp.pageDetails -and $resp.pageDetails.nextPageUrl) { $resp.pageDetails.nextPageUrl } else { $null }
+        $page++
+    } while ($nextPageUrl)
 
     return $siteMap.Values
 }
 
 function Get-DattoSiteVariable {
     # Returns the value of a named site variable, or $null if not set.
+    # Endpoint: GET /v2/site/{siteUid}/variables
+    # Response: { variables: [ { id, name, value, masked } ] }
     param(
         [string]$Token,
         [string]$SiteUid,
@@ -183,12 +200,21 @@ function Get-DattoSiteVariable {
     )
 
     try {
-        $resp = Invoke-DattoRequest -Token $Token -Endpoint "/account/$SiteUid/variables"
-        $vars = if ($resp.variables) { $resp.variables } elseif ($resp -is [array]) { $resp } else { @() }
-        $match = $vars | Where-Object { $_.name -eq $VariableName } | Select-Object -First 1
-        if ($match) { return $match.value }
+        $page = 0
+        do {
+            $resp = Invoke-DattoRequest -Token $Token -Endpoint "/site/$SiteUid/variables" `
+                        -QueryParams @{ page = $page; max = 250 }
+            $vars = if ($resp.variables) { $resp.variables } elseif ($resp -is [array]) { $resp } else { @() }
+
+            $match = $vars | Where-Object { $_.name -eq $VariableName } | Select-Object -First 1
+            if ($match) { return $match.value }
+
+            $nextPageUrl = if ($resp.pageDetails -and $resp.pageDetails.nextPageUrl) { $resp.pageDetails.nextPageUrl } else { $null }
+            $page++
+        } while ($nextPageUrl)
     }
     catch { }
+
     return $null
 }
 
@@ -321,7 +347,7 @@ function Resolve-Network {
         } | Select-Object -First 1
 
         if ($match) {
-            $networkName = if ($match.meta -and $match.meta.desc)  { $match.meta.desc }
+            $networkName = if ($match.meta -and $match.meta.desc)     { $match.meta.desc }
                            elseif ($match.meta -and $match.meta.name) { $match.meta.name }
                            else { $NetworkId }
             return @{ Site = $match; NetworkName = $networkName }
@@ -330,7 +356,7 @@ function Resolve-Network {
     }
 
     $first = $hostSites | Select-Object -First 1
-    $networkName = if ($first -and $first.meta -and $first.meta.desc)  { $first.meta.desc }
+    $networkName = if ($first -and $first.meta -and $first.meta.desc)     { $first.meta.desc }
                    elseif ($first -and $first.meta -and $first.meta.name) { $first.meta.name }
                    else { 'Unknown Network' }
     return @{ Site = $first; NetworkName = $networkName }
@@ -370,23 +396,22 @@ catch {
     exit 1
 }
 
-# --- Step 2: Get all sites in the proactive service dynamic group ---
+# --- Step 2: Get all sites in the proactive service filter ---
 $proactiveSites = $null
 try {
     $proactiveSites = @(Get-DattoSitesInFilter -Token $dattoToken)
 }
 catch {
-    Write-DattoResult -Status "DATTO API ERROR: Could not retrieve dynamic group $DattoFilterId — $($_.Exception.Message)"
+    Write-DattoResult -Status "DATTO API ERROR: Could not retrieve devices for filter $DattoFilterId — $($_.Exception.Message)"
     exit 1
 }
 
 if ($proactiveSites.Count -eq 0) {
-    Write-DattoResult -Status "No sites found in dynamic group $DattoFilterId — nothing to monitor"
+    Write-DattoResult -Status "No sites found in filter $DattoFilterId — nothing to monitor"
     exit 0
 }
 
 # --- Step 3: Collect UnifiSiteKeys from each proactive site ---
-# Deduplicated by site UID
 $allEntries = [System.Collections.Generic.List[hashtable]]::new()
 
 foreach ($dattoSite in $proactiveSites) {
@@ -403,7 +428,7 @@ foreach ($dattoSite in $proactiveSites) {
     }
 
     if (-not $siteKeysRaw) {
-        # This Datto site has no UnifiSiteKeys — skip silently (not every proactive site has UniFi)
+        # Site is in the proactive group but has no UniFi — skip silently
         continue
     }
 
@@ -451,9 +476,9 @@ foreach ($entry in $allEntries) {
             $devices = $allDevices
         }
 
-        $stats  = if ($site -and $site.statistics)          { $site.statistics }          else { $null }
-        $pct    = if ($stats -and $stats.percentages)       { $stats.percentages }        else { $null }
-        $counts = if ($stats -and $stats.counts)            { $stats.counts }             else { $null }
+        $stats  = if ($site -and $site.statistics)    { $site.statistics }   else { $null }
+        $pct    = if ($stats -and $stats.percentages) { $stats.percentages } else { $null }
+        $counts = if ($stats -and $stats.counts)      { $stats.counts }      else { $null }
 
         # --- Offline devices ---
         $offlineDevices = @($devices | Where-Object { $_.status -eq 'offline' })
