@@ -150,14 +150,57 @@ function Get-Devices {
     return $all
 }
 
-function Get-SiteStats {
-    param([string]$HostId)
-    try {
-        $resp  = Invoke-UniFiRequest -Endpoint '/sites' -QueryParams @{ pageSize = 200 }
-        $sites = if ($resp.data) { $resp.data } elseif ($resp -is [array]) { $resp } else { @() }
-        return $sites | Where-Object { $_.hostId -eq $HostId } | Select-Object -First 1
+function Get-AllSites {
+    # Returns all sites from /v1/sites with pagination
+    $all       = [System.Collections.Generic.List[object]]::new()
+    $nextToken = $null
+    do {
+        $params = @{ pageSize = 200 }
+        if ($nextToken) { $params['nextToken'] = $nextToken }
+        try {
+            $resp  = Invoke-UniFiRequest -Endpoint '/sites' -QueryParams $params
+            $sites = if ($resp.data) { $resp.data } elseif ($resp -is [array]) { $resp } else { @() }
+            foreach ($s in $sites) { $all.Add($s) }
+            $nextToken = if ($resp.nextToken) { $resp.nextToken } else { $null }
+        }
+        catch { break }
+    } while ($nextToken)
+    return $all
+}
+
+function Resolve-Network {
+    # Returns the site object matching hostId + optional networkId.
+    # NetworkId is matched against site.id or site.meta.name (the internal slug).
+    # Also returns the human-readable network name.
+    param(
+        [object[]]$AllSites,
+        [string]$HostId,
+        [string]$NetworkId
+    )
+
+    $hostSites = @($AllSites | Where-Object { $_.hostId -eq $HostId })
+
+    if ($NetworkId) {
+        $match = $hostSites | Where-Object {
+            ($_.id -and $_.id -eq $NetworkId) -or
+            ($_.meta -and $_.meta.name -and $_.meta.name -eq $NetworkId)
+        } | Select-Object -First 1
+
+        if ($match) {
+            $networkName = if ($match.meta -and $match.meta.desc) { $match.meta.desc }
+                           elseif ($match.meta -and $match.meta.name) { $match.meta.name }
+                           else { $NetworkId }
+            return @{ Site = $match; NetworkName = $networkName }
+        }
+        # NetworkId not matched — fall through to first site
+        Write-Host "WARNING: NetworkId '$NetworkId' not matched for host '$HostId'. Using first available site."
     }
-    catch { return $null }
+
+    $first = $hostSites | Select-Object -First 1
+    $networkName = if ($first -and $first.meta -and $first.meta.desc) { $first.meta.desc }
+                   elseif ($first -and $first.meta -and $first.meta.name) { $first.meta.name }
+                   else { 'Unknown Network' }
+    return @{ Site = $first; NetworkName = $networkName }
 }
 
 #endregion
@@ -167,19 +210,39 @@ function Get-SiteStats {
 $alerts   = [System.Collections.Generic.List[string]]::new()
 $entries  = Parse-SiteKeys -Raw $SiteKeysRaw
 
+# Fetch all sites once and reuse across entries
+$allSites = @(Get-AllSites)
+
 foreach ($entry in $entries) {
     $hostId    = $entry.HostId
     $networkId = $entry.NetworkId
 
-    # Resolve display name
-    $hostName = Get-HostName -HostId $hostId
-    $label    = if ($networkId) { "$hostName (net: $networkId)" } else { $hostName }
+    # Resolve host name and network
+    $hostName       = Get-HostName -HostId $hostId
+    $networkResult  = Resolve-Network -AllSites $allSites -HostId $hostId -NetworkId $networkId
+    $site           = $networkResult.Site
+    $networkName    = $networkResult.NetworkName
 
-    # Get devices
-    $devices = @(Get-Devices -HostId $hostId)
+    # Build alert label: "HostName > NetworkName"
+    $label = "$hostName > $networkName"
 
-    # Get site statistics (WAN uptime, TX retry, etc.)
-    $site   = Get-SiteStats -HostId $hostId
+    # Get all devices for the host then filter to this network
+    $allDevices = @(Get-Devices -HostId $hostId)
+
+    # Filter devices to this specific network when a NetworkId was provided.
+    # Devices carry a networkId or siteId field; fall back to all devices if neither is present.
+    if ($networkId) {
+        $networkDevices = @($allDevices | Where-Object {
+            ($_.networkId -and $_.networkId -eq $networkId) -or
+            ($_.siteId    -and $_.siteId    -eq $networkId)
+        })
+        $devices = if ($networkDevices.Count -gt 0) { $networkDevices } else { $allDevices }
+    }
+    else {
+        $devices = $allDevices
+    }
+
+    # Get statistics from the matched site entry
     $stats  = if ($site -and $site.statistics) { $site.statistics } else { $null }
     $pct    = if ($stats -and $stats.percentages) { $stats.percentages } else { $null }
     $counts = if ($stats -and $stats.counts) { $stats.counts } else { $null }
