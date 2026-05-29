@@ -136,6 +136,32 @@ Two monitor scripts are provided. Both run as **Datto RMM monitor components** o
 
 > **A machine is required.** Datto RMM monitor components execute on a managed device (an agent-installed machine). There is no agentless execution. Any always-on server or workstation at your office works — it only needs outbound HTTPS to `api.ui.com`.
 
+### Testing locally before deploying to Datto RMM
+
+Both monitor scripts support a `-Test` switch that runs the full live query against the UniFi (and Datto) APIs but outputs verbose colour-coded results to your terminal instead of the compressed Datto format. Use this to verify everything works before creating a component in Datto RMM.
+
+**Manual version:**
+```powershell
+.\Invoke-UniFiDattoMonitor-Manual.ps1 -Test
+```
+
+**Datto API version:**
+```powershell
+.\Invoke-UniFiDattoMonitor-DattoAPI.ps1 -Test
+```
+
+In test mode you will see:
+- Each host and network being evaluated
+- Every device listed with its `status` and `firmware` state (green = online, red = offline)
+- TX retry % and WAN uptime % for each network
+- Colour-coded alert lines — red for alerts, yellow for warnings, green for healthy
+- The exact `STATUS=` line that Datto RMM would receive
+- The exit code that would be returned (0 = healthy, 1 = alert)
+
+The script still makes real API calls — no data is mocked. If it works in `-Test`, it will work on the RMM.
+
+---
+
 ### Which script to use
 
 | | Manual | Datto API |

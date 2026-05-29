@@ -26,10 +26,25 @@
         Host + specific net  : HostId|NetworkId
         Multiple entries     : HostId1,HostId2|NetworkId2,HostId3
 
+    LOCAL TESTING
+        Run with -Test to get verbose colour-coded output showing which sites
+        were found in the filter, which have UnifiSiteKeys set, and what alerts
+        would fire — without the compressed Datto result format. Requires that
+        your Datto API credentials and UniFi API key are filled in below.
+
+            .\Invoke-UniFiDattoMonitor-DattoAPI.ps1 -Test
+
+        The final STATUS line is still printed so you can see exactly what
+        Datto RMM would receive.
+
     Exit codes:
         0 — all monitored sites healthy (or no sites in group have UnifiSiteKeys set)
         1 — one or more alert conditions detected, or a fatal error occurred
 #>
+
+param(
+    [switch]$Test   # Verbose local output — use this when testing outside Datto RMM
+)
 
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
 Set-StrictMode -Version 1
@@ -63,6 +78,11 @@ function Write-DattoResult {
     Write-Host "STATUS=$Status"
     Write-Host '<-End Result->'
 }
+
+function Write-TestInfo    { param([string]$Msg) if ($Test) { Write-Host "[INFO]    $Msg" -ForegroundColor Cyan } }
+function Write-TestOk      { param([string]$Msg) if ($Test) { Write-Host "[OK]      $Msg" -ForegroundColor Green } }
+function Write-TestAlert   { param([string]$Msg) if ($Test) { Write-Host "[ALERT]   $Msg" -ForegroundColor Red } }
+function Write-TestWarning { param([string]$Msg) if ($Test) { Write-Host "[WARNING] $Msg" -ForegroundColor Yellow } }
 
 if (-not $DattoApiKey -or $DattoApiKey -eq 'YOUR_DATTO_API_KEY_HERE') {
     Write-DattoResult -Status 'CONFIGURATION ERROR: DattoApiKey is not set.'
@@ -356,7 +376,7 @@ function Resolve-Network {
                            else { $NetworkId }
             return @{ Site = $match; NetworkName = $networkName }
         }
-        Write-Host "WARNING: NetworkId '$NetworkId' not matched for host '$HostId'. Using first available site."
+        Write-TestWarning "NetworkId '$NetworkId' not matched for host '$HostId' — using first available site."
     }
 
     $first = $hostSites | Select-Object -First 1
@@ -387,13 +407,23 @@ function Parse-SiteKeys {
 
 #region MAIN
 
+if ($Test) {
+    Write-Host ''
+    Write-Host '========================================' -ForegroundColor Cyan
+    Write-Host '  UniFi Monitor — Test Mode (Datto API)' -ForegroundColor Cyan
+    Write-Host '========================================' -ForegroundColor Cyan
+    Write-Host ''
+}
+
 $alerts    = [System.Collections.Generic.List[string]]::new()
 $apiErrors = [System.Collections.Generic.List[string]]::new()
 
 # --- Step 1: Authenticate with Datto RMM ---
+Write-TestInfo "Authenticating with Datto RMM API at $DattoApiUrl..."
 $dattoToken = $null
 try {
     $dattoToken = Get-DattoBearerToken
+    Write-TestOk "Datto RMM authentication successful."
 }
 catch {
     Write-DattoResult -Status "DATTO API ERROR: Authentication failed — $($_.Exception.Message)"
@@ -401,9 +431,11 @@ catch {
 }
 
 # --- Step 2: Get all sites in the proactive service filter ---
+Write-TestInfo "Querying filter $DattoFilterId for proactive sites..."
 $proactiveSites = $null
 try {
     $proactiveSites = @(Get-DattoSitesInFilter -Token $dattoToken)
+    Write-TestInfo "$($proactiveSites.Count) distinct site(s) found in filter."
 }
 catch {
     Write-DattoResult -Status "DATTO API ERROR: Could not retrieve devices for filter $DattoFilterId — $($_.Exception.Message)"
@@ -428,14 +460,16 @@ foreach ($dattoSite in $proactiveSites) {
     }
     catch {
         $apiErrors.Add("[Datto/$siteName] Failed to read site variables: $($_.Exception.Message)")
+        Write-TestWarning "[$siteName] Failed to read site variables: $($_.Exception.Message)"
         continue
     }
 
     if (-not $siteKeysRaw) {
-        # Site is in the proactive group but has no UniFi — skip silently
+        Write-TestInfo "[$siteName] No UnifiSiteKeys set — skipping."
         continue
     }
 
+    Write-TestInfo "[$siteName] UnifiSiteKeys = $siteKeysRaw"
     $parsed = Parse-SiteKeys -Raw $siteKeysRaw
     foreach ($e in $parsed) { $allEntries.Add($e) }
 }
@@ -446,9 +480,11 @@ if ($allEntries.Count -eq 0) {
 }
 
 # --- Step 4: Fetch UniFi sites once ---
+Write-TestInfo "Fetching all UniFi sites..."
 $allUniFiSites = $null
 try {
     $allUniFiSites = @(Get-AllUniFiSites)
+    Write-TestInfo "$($allUniFiSites.Count) site/network entries retrieved."
 }
 catch {
     Write-DattoResult -Status "UNIFI API ERROR: Could not retrieve sites — $($_.Exception.Message)"
@@ -467,6 +503,11 @@ foreach ($entry in $allEntries) {
         $networkName   = $networkResult.NetworkName
         $label         = "$hostName > $networkName"
 
+        if ($Test) {
+            Write-Host ''
+            Write-Host "  --- $label ---" -ForegroundColor White
+        }
+
         $allDevices = @(Get-Devices -HostId $hostId)
 
         # The cloud API returns all devices for a host with no per-device network/site ID,
@@ -474,9 +515,27 @@ foreach ($entry in $allEntries) {
         # count, TX retry, WAN uptime) are correctly scoped to the network via Resolve-Network.
         $devices = $allDevices
 
+        Write-TestInfo "$($devices.Count) device(s) on host '$hostName'."
+
+        if ($Test) {
+            foreach ($dev in $devices) {
+                $devName   = if ($dev.name)  { $dev.name }  else { $dev.model }
+                $devStatus = if ($dev.status) { $dev.status } else { 'unknown' }
+                $devFw     = if ($dev.firmwareStatus) { $dev.firmwareStatus } else { 'n/a' }
+                $color     = if ($devStatus -eq 'online') { 'Green' } else { 'Red' }
+                Write-Host ("    {0,-30} status={1,-8} firmware={2}" -f $devName, $devStatus, $devFw) -ForegroundColor $color
+            }
+        }
+
         $stats  = if ($site -and $site.statistics)    { $site.statistics }   else { $null }
         $pct    = if ($stats -and $stats.percentages) { $stats.percentages } else { $null }
         $counts = if ($stats -and $stats.counts)      { $stats.counts }      else { $null }
+
+        if ($Test -and $pct) {
+            $txVal  = if ($null -ne $pct.txRetry)   { "$([math]::Round($pct.txRetry,1))%" }   else { 'n/a' }
+            $wanVal = if ($null -ne $pct.wanUptime)  { "$([math]::Round($pct.wanUptime,2))%" } else { 'n/a' }
+            Write-TestInfo "  TX retry: $txVal   WAN uptime: $wanVal"
+        }
 
         # --- Offline devices ---
         $offlineDevices = @($devices | Where-Object { $_.status -eq 'offline' })
@@ -486,12 +545,17 @@ foreach ($entry in $allEntries) {
             $nameList = if ($offlineDevices.Count -gt 0) {
                 ($offlineDevices | ForEach-Object { if ($_.name) { $_.name } else { $_.model } }) -join ', '
             } else { 'multiple devices' }
-            $alerts.Add("[$label] OUTAGE: $offlineCount devices offline — $nameList")
+            $msg = "[$label] OUTAGE: $offlineCount devices offline — $nameList"
+            $alerts.Add($msg); Write-TestAlert $msg
         }
         elseif ($offlineCount -eq 1) {
             $dev  = $offlineDevices | Select-Object -First 1
             $name = if ($dev -and $dev.name) { $dev.name } elseif ($dev -and $dev.model) { $dev.model } else { 'Unknown' }
-            $alerts.Add("[$label] OFFLINE: $name is offline")
+            $msg  = "[$label] OFFLINE: $name is offline"
+            $alerts.Add($msg); Write-TestAlert $msg
+        }
+        else {
+            Write-TestOk "[$label] All devices online."
         }
 
         # --- TX retry rate ---
@@ -499,10 +563,15 @@ foreach ($entry in $allEntries) {
             $txRetry = [double]$pct.txRetry
             $txRound = [math]::Round($txRetry, 1)
             if ($txRetry -gt $TxRetryCriticalPct) {
-                $alerts.Add("[$label] CRITICAL: WAN packet retry rate ${txRound}% (threshold: ${TxRetryCriticalPct}%)")
+                $msg = "[$label] CRITICAL: WAN packet retry rate ${txRound}% (threshold: ${TxRetryCriticalPct}%)"
+                $alerts.Add($msg); Write-TestAlert $msg
             }
             elseif ($txRetry -gt $TxRetryWarningPct) {
-                $alerts.Add("[$label] WARNING: Elevated WAN packet retry rate ${txRound}% (threshold: ${TxRetryWarningPct}%)")
+                $msg = "[$label] WARNING: Elevated WAN packet retry rate ${txRound}% (threshold: ${TxRetryWarningPct}%)"
+                $alerts.Add($msg); Write-TestWarning $msg
+            }
+            else {
+                Write-TestOk "[$label] TX retry ${txRound}% — within threshold."
             }
         }
 
@@ -511,25 +580,40 @@ foreach ($entry in $allEntries) {
             $wanUptime = [double]$pct.wanUptime
             if ($wanUptime -lt $WanUptimeWarningPct) {
                 $upRound = [math]::Round($wanUptime, 2)
-                $alerts.Add("[$label] WARNING: WAN uptime ${upRound}% is below threshold (${WanUptimeWarningPct}%)")
+                $msg = "[$label] WARNING: WAN uptime ${upRound}% is below threshold (${WanUptimeWarningPct}%)"
+                $alerts.Add($msg); Write-TestWarning $msg
+            }
+            else {
+                $upRound = [math]::Round($wanUptime, 2)
+                Write-TestOk "[$label] WAN uptime ${upRound}% — within threshold."
             }
         }
 
         # --- Critical notifications ---
         if ($counts -and $null -ne $counts.criticalNotification -and [int]$counts.criticalNotification -gt 0) {
-            $n = [int]$counts.criticalNotification
-            $alerts.Add("[$label] ALERT: $n critical notification(s) on controller")
+            $n   = [int]$counts.criticalNotification
+            $msg = "[$label] ALERT: $n critical notification(s) on controller"
+            $alerts.Add($msg); Write-TestAlert $msg
         }
     }
     catch {
         $entryLabel = if ($networkId) { "$hostId|$networkId" } else { $hostId }
-        $apiErrors.Add("[$entryLabel] API error: $($_.Exception.Message)")
+        $errMsg = "[$entryLabel] API error: $($_.Exception.Message)"
+        $apiErrors.Add($errMsg)
+        Write-TestWarning $errMsg
     }
 }
 
 #endregion
 
 #region OUTPUT
+
+if ($Test) {
+    Write-Host ''
+    Write-Host '========================================' -ForegroundColor Cyan
+    Write-Host '  Datto RMM Output Preview' -ForegroundColor Cyan
+    Write-Host '========================================' -ForegroundColor Cyan
+}
 
 if ($apiErrors.Count -gt 0 -and $alerts.Count -eq 0) {
     Write-DattoResult -Status "API error(s) prevented evaluation: $($apiErrors -join ' | ')"
@@ -542,10 +626,12 @@ if ($alerts.Count -gt 0) {
         $summary += " | API errors: $($apiErrors -join ' | ')"
     }
     Write-DattoResult -Status $summary
+    if ($Test) { Write-Host '' ; Write-Host "Exit code: 1 (alert)" -ForegroundColor Red }
     exit 1
 }
 
 Write-DattoResult -Status 'All monitored sites healthy'
+if ($Test) { Write-Host '' ; Write-Host "Exit code: 0 (healthy)" -ForegroundColor Green }
 exit 0
 
 #endregion
