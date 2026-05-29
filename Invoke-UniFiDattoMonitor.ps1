@@ -46,13 +46,17 @@ $WanUptimeWarningPct = 99.0
 #region VALIDATION
 
 if (-not $UnifiApiKey -or $UnifiApiKey -eq 'YOUR_API_KEY_HERE') {
-    Write-Host 'CONFIGURATION ERROR: UnifiApiKey is not set. Add your API key to the script or configure the Datto global variable.'
-    exit 2
+    Write-Host '<-Start Result->'
+    Write-Host 'STATUS=CONFIGURATION ERROR: UnifiApiKey is not set. Add your API key to the script or configure the Datto global variable.'
+    Write-Host '<-End Result->'
+    exit 1
 }
 
 if (-not $SiteKeysRaw) {
-    Write-Host 'CONFIGURATION ERROR: Site variable UnifiSiteKeys is not set.'
-    exit 2
+    Write-Host '<-Start Result->'
+    Write-Host 'STATUS=CONFIGURATION ERROR: Site variable UnifiSiteKeys is not set.'
+    Write-Host '<-End Result->'
+    exit 1
 }
 
 #endregion
@@ -237,9 +241,10 @@ try {
     $allSites = @(Get-AllSites)
 }
 catch {
-    Write-Host "UniFi Monitor: API error — could not retrieve sites."
-    Write-Host $_.Exception.Message
-    exit 3
+    Write-Host '<-Start Result->'
+    Write-Host "STATUS=API error — could not retrieve sites: $($_.Exception.Message)"
+    Write-Host '<-End Result->'
+    exit 1
 }
 
 foreach ($entry in $entries) {
@@ -330,27 +335,29 @@ foreach ($entry in $entries) {
 
 #region OUTPUT
 
-if ($apiErrors.Count -gt 0 -and $alerts.Count -eq 0) {
-    # Only API errors, no network alerts — exit 3 so Datto distinguishes this from a real alert
-    Write-Host "UniFi Monitor: API error(s) prevented full evaluation."
-    Write-Host ''
-    foreach ($e in $apiErrors) { Write-Host $e }
-    exit 3
+function Write-DattoResult {
+    param([string]$Status)
+    Write-Host '<-Start Result->'
+    Write-Host "STATUS=$Status"
+    Write-Host '<-End Result->'
 }
 
-if ($alerts.Count -gt 0) {
-    Write-Host "UniFi Monitor: $($alerts.Count) issue(s) detected"
-    Write-Host ''
-    foreach ($a in $alerts) { Write-Host $a }
-    if ($apiErrors.Count -gt 0) {
-        Write-Host ''
-        Write-Host "Additionally, $($apiErrors.Count) entry/entries could not be evaluated due to API errors:"
-        foreach ($e in $apiErrors) { Write-Host $e }
-    }
+if ($apiErrors.Count -gt 0 -and $alerts.Count -eq 0) {
+    $msg = "API error(s) prevented evaluation: $($apiErrors -join ' | ')"
+    Write-DattoResult -Status $msg
     exit 1
 }
 
-Write-Host 'UniFi Monitor: All sites healthy'
+if ($alerts.Count -gt 0) {
+    $summary = $alerts -join ' | '
+    if ($apiErrors.Count -gt 0) {
+        $summary += " | API errors: $($apiErrors -join ' | ')"
+    }
+    Write-DattoResult -Status $summary
+    exit 1
+}
+
+Write-DattoResult -Status 'All sites healthy'
 exit 0
 
 #endregion
