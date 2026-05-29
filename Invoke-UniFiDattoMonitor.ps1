@@ -16,6 +16,7 @@
         0 — all sites healthy
         1 — one or more alert conditions detected
         2 — configuration error (missing variables)
+        3 — API error (UniFi unreachable or auth failure)
 #>
 
 Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
@@ -96,9 +97,29 @@ function Invoke-UniFiRequest {
     $wc.Headers.Add('Accept', 'application/json')
     $wc.Headers.Add('X-API-Key', $UnifiApiKey)
 
-    $uriObj = New-Object System.Uri($uri, $true)
-    $raw     = $wc.DownloadString($uriObj)
-    return $raw | ConvertFrom-Json
+    try {
+        $uriObj = New-Object System.Uri($uri, $true)
+        $raw    = $wc.DownloadString($uriObj)
+        return $raw | ConvertFrom-Json
+    }
+    catch [System.Net.WebException] {
+        $status = $null
+        if ($_.Exception.Response) {
+            $status = [int]$_.Exception.Response.StatusCode
+        }
+        if ($status -eq 401 -or $status -eq 403) {
+            throw "API authentication failed (HTTP $status). Check UnifiApiKey is correct."
+        }
+        elseif ($status -ge 500) {
+            throw "UniFi API server error (HTTP $status) for endpoint '$Endpoint'."
+        }
+        else {
+            throw "UniFi API unreachable at '$uri': $($_.Exception.Message)"
+        }
+    }
+    catch {
+        throw "Unexpected error calling '$uri': $($_.Exception.Message)"
+    }
 }
 
 function Get-HostName {
@@ -135,7 +156,9 @@ function Get-Devices {
             $raw      = $wc.DownloadString($uriObj)
             $response = $raw | ConvertFrom-Json
         }
-        catch { break }
+        catch {
+            throw "Failed to retrieve devices for host '$HostId': $($_.Exception.Message)"
+        }
 
         $wrappers = if ($response.data) { $response.data } elseif ($response -is [array]) { $response } else { @() }
         foreach ($wrapper in $wrappers) {
@@ -157,13 +180,10 @@ function Get-AllSites {
     do {
         $params = @{ pageSize = 200 }
         if ($nextToken) { $params['nextToken'] = $nextToken }
-        try {
-            $resp  = Invoke-UniFiRequest -Endpoint '/sites' -QueryParams $params
-            $sites = if ($resp.data) { $resp.data } elseif ($resp -is [array]) { $resp } else { @() }
-            foreach ($s in $sites) { $all.Add($s) }
-            $nextToken = if ($resp.nextToken) { $resp.nextToken } else { $null }
-        }
-        catch { break }
+        $resp  = Invoke-UniFiRequest -Endpoint '/sites' -QueryParams $params
+        $sites = if ($resp.data) { $resp.data } elseif ($resp -is [array]) { $resp } else { @() }
+        foreach ($s in $sites) { $all.Add($s) }
+        $nextToken = if ($resp.nextToken) { $resp.nextToken } else { $null }
     } while ($nextToken)
     return $all
 }
@@ -207,45 +227,55 @@ function Resolve-Network {
 
 #region ALERT EVALUATION
 
-$alerts   = [System.Collections.Generic.List[string]]::new()
-$entries  = Parse-SiteKeys -Raw $SiteKeysRaw
+$alerts      = [System.Collections.Generic.List[string]]::new()
+$apiErrors   = [System.Collections.Generic.List[string]]::new()
+$entries     = Parse-SiteKeys -Raw $SiteKeysRaw
 
-# Fetch all sites once and reuse across entries
-$allSites = @(Get-AllSites)
+# Fetch all sites once — if this fails the whole run is aborted as we can't evaluate anything
+$allSites = $null
+try {
+    $allSites = @(Get-AllSites)
+}
+catch {
+    Write-Host "UniFi Monitor: API error — could not retrieve sites."
+    Write-Host $_.Exception.Message
+    exit 3
+}
 
 foreach ($entry in $entries) {
     $hostId    = $entry.HostId
     $networkId = $entry.NetworkId
 
-    # Resolve host name and network
-    $hostName       = Get-HostName -HostId $hostId
-    $networkResult  = Resolve-Network -AllSites $allSites -HostId $hostId -NetworkId $networkId
-    $site           = $networkResult.Site
-    $networkName    = $networkResult.NetworkName
+    try {
+        # Resolve host name and network
+        $hostName      = Get-HostName -HostId $hostId
+        $networkResult = Resolve-Network -AllSites $allSites -HostId $hostId -NetworkId $networkId
+        $site          = $networkResult.Site
+        $networkName   = $networkResult.NetworkName
 
-    # Build alert label: "HostName > NetworkName"
-    $label = "$hostName > $networkName"
+        # Build alert label: "HostName > NetworkName"
+        $label = "$hostName > $networkName"
 
-    # Get all devices for the host then filter to this network
-    $allDevices = @(Get-Devices -HostId $hostId)
+        # Get all devices for the host then filter to this network
+        $allDevices = @(Get-Devices -HostId $hostId)
 
-    # Filter devices to this specific network when a NetworkId was provided.
-    # Devices carry a networkId or siteId field; fall back to all devices if neither is present.
-    if ($networkId) {
-        $networkDevices = @($allDevices | Where-Object {
-            ($_.networkId -and $_.networkId -eq $networkId) -or
-            ($_.siteId    -and $_.siteId    -eq $networkId)
-        })
-        $devices = if ($networkDevices.Count -gt 0) { $networkDevices } else { $allDevices }
-    }
-    else {
-        $devices = $allDevices
-    }
+        # Filter devices to this specific network when a NetworkId was provided.
+        # Devices carry a networkId or siteId field; fall back to all devices if neither is present.
+        if ($networkId) {
+            $networkDevices = @($allDevices | Where-Object {
+                ($_.networkId -and $_.networkId -eq $networkId) -or
+                ($_.siteId    -and $_.siteId    -eq $networkId)
+            })
+            $devices = if ($networkDevices.Count -gt 0) { $networkDevices } else { $allDevices }
+        }
+        else {
+            $devices = $allDevices
+        }
 
-    # Get statistics from the matched site entry
-    $stats  = if ($site -and $site.statistics) { $site.statistics } else { $null }
-    $pct    = if ($stats -and $stats.percentages) { $stats.percentages } else { $null }
-    $counts = if ($stats -and $stats.counts) { $stats.counts } else { $null }
+        # Get statistics from the matched site entry
+        $stats  = if ($site -and $site.statistics) { $site.statistics } else { $null }
+        $pct    = if ($stats -and $stats.percentages) { $stats.percentages } else { $null }
+        $counts = if ($stats -and $stats.counts) { $stats.counts } else { $null }
 
     # --- Offline devices ---
     $offlineDevices  = @($devices | Where-Object { $_.status -eq 'offline' })
@@ -284,10 +314,15 @@ foreach ($entry in $entries) {
         }
     }
 
-    # --- Critical notifications ---
-    if ($counts -and $null -ne $counts.criticalNotification -and [int]$counts.criticalNotification -gt 0) {
-        $n = [int]$counts.criticalNotification
-        $alerts.Add("[$label] ALERT: $n critical notification(s) on controller")
+        # --- Critical notifications ---
+        if ($counts -and $null -ne $counts.criticalNotification -and [int]$counts.criticalNotification -gt 0) {
+            $n = [int]$counts.criticalNotification
+            $alerts.Add("[$label] ALERT: $n critical notification(s) on controller")
+        }
+    }
+    catch {
+        $entryLabel = if ($networkId) { "$hostId|$networkId" } else { $hostId }
+        $apiErrors.Add("[$entryLabel] API error: $($_.Exception.Message)")
     }
 }
 
@@ -295,17 +330,27 @@ foreach ($entry in $entries) {
 
 #region OUTPUT
 
+if ($apiErrors.Count -gt 0 -and $alerts.Count -eq 0) {
+    # Only API errors, no network alerts — exit 3 so Datto distinguishes this from a real alert
+    Write-Host "UniFi Monitor: API error(s) prevented full evaluation."
+    Write-Host ''
+    foreach ($e in $apiErrors) { Write-Host $e }
+    exit 3
+}
+
 if ($alerts.Count -gt 0) {
     Write-Host "UniFi Monitor: $($alerts.Count) issue(s) detected"
     Write-Host ''
-    foreach ($a in $alerts) {
-        Write-Host $a
+    foreach ($a in $alerts) { Write-Host $a }
+    if ($apiErrors.Count -gt 0) {
+        Write-Host ''
+        Write-Host "Additionally, $($apiErrors.Count) entry/entries could not be evaluated due to API errors:"
+        foreach ($e in $apiErrors) { Write-Host $e }
     }
     exit 1
 }
-else {
-    Write-Host 'UniFi Monitor: All sites healthy'
-    exit 0
-}
+
+Write-Host 'UniFi Monitor: All sites healthy'
+exit 0
 
 #endregion
