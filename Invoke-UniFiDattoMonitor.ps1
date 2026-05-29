@@ -55,10 +55,11 @@ if (-not $UnifiApiKey -or $UnifiApiKey -eq 'YOUR_API_KEY_HERE') {
 }
 
 if (-not $SiteKeysRaw) {
+    # No site variable set — this site is not configured for UniFi monitoring, exit cleanly
     Write-Host '<-Start Result->'
-    Write-Host 'STATUS=CONFIGURATION ERROR: Site variable UnifiSiteKeys is not set.'
+    Write-Host 'STATUS=UniFi monitoring not configured for this site (UnifiSiteKeys not set)'
     Write-Host '<-End Result->'
-    exit 1
+    exit 0
 }
 
 #endregion
