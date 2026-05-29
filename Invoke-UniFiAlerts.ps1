@@ -16,7 +16,6 @@ param(
     [switch]$CheckDeps
 )
 
-Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser -Force
 Set-StrictMode -Version 1
 $ErrorActionPreference = 'Continue'
 
@@ -52,90 +51,16 @@ $Config = @{
     ClosedStatusIds         = @(5, 9, 10)
 
     # TX retry rate thresholds (percentage)
-    TxRetryWarningPct       = 50.0
-    TxRetryCriticalPct      = 55.0
+    TxRetryWarningPct       = 5.0
+    TxRetryCriticalPct      = 15.0
 
     # WAN uptime threshold (percentage)
-    WanUptimeWarningPct     = 99.0
+    WanUptimeWarningPct     = 99.9
 
-    # Maximum tickets to raise (or preview in TestMode) per run. 0 = unlimited.
-    # Useful during testing to avoid flooding Autotask. Alerts beyond this limit
-    # are skipped with a console warning.
-    MaxTicketsPerRun        = 0
-
-    # Set to $true to run in Test Mode without passing -TestMode on the command line.
-    # Useful when deploying via Datto RMM or any runner that cannot pass switch parameters.
-    # The -TestMode switch takes precedence if both are set.
-    TestMode                = $false
-
-    # When TestMode is active, write the full preview to this file path in addition to
-    # the console. Leave empty ('') to disable file output.
-    TestModeOutputFile      = ''   # e.g. 'C:\Scripts\UniFiAlerts-Preview.txt'
-
-    # Group all alerts for the same site into a single Autotask ticket instead of one
-    # ticket per alert. The ticket title becomes the site name and the description lists
-    # every alert condition found. Duplicate suppression checks for an open site ticket.
-    GroupAlertsBySite       = $false
-
-    # Firmware versions to suppress per device shortname.
-    # If a device is intentionally pinned to a specific version, add it here to prevent
-    # firmware update alerts. Keys are the shortname field from the UniFi device object
-    # (e.g. 'US24P250'). Run -TestMode to see the shortname for each device.
-    FirmwareExclusions      = @{
-        'US24P250'  = @('7.2.123')   # USW Pro 24 PoE 250W
-        'US8P150'   = @('7.2.123')   # USW 8 PoE 150W
-        'US8P60W'   = @('7.2.123')   # USW 8 60W
-        'USMINI'    = @('7.2.123')   # USW Flex Mini
-    }
-
-    # Site names (lowercase) to skip entirely — no alerts or tickets will be raised for these.
-    # Use the resolved host name shown in [INFO] Host '...' -> '...' log lines (lowercased).
-    SiteExclusions          = @(
-        'affinity controller'
-        'andersons network'
-        'catering projects ltd'
-        'jpr farm - cartledge house'
-        'colin beaumont - home'
-    )
-
-    # UniFi host name (lowercase) → Autotask company name
-    # Keys are the hostName values returned by GET /v1/hosts/{id} — these are the
-    # human-readable names shown in the UniFi console (e.g. 'client site name').
-    # Run -TestMode to see the resolved host name for each site.
+    # UniFi site name (lowercase) → Autotask company name
+    # Add entries as needed: 'site-name' = 'Company Name in Autotask'
     SiteMapping             = @{
-        'wales parish council'              = ''
-        'royds mill'                        = ''
-        'support dogs - elsworth house'     = ''
-        'ftg - ho'                          = ''
-        'ranmoor health & safety'           = ''
-        'express coatings'                  = ''
-        'weston park - support centre'      = ''
-        'scott anson - home'                = ''
-        'scott anson - office'              = ''
-        'ford windows cloudkey+'            = ''
-        'sherwood-udm-pro'                  = ''
-        'a1 taxis - head office'            = ''
-        'thornberry - north anston'         = ''
-        'weston park - charity hub'         = ''
-        'wheel sets (uk) ltd'               = ''
-        'twelve trees meadowbrook manor'    = ''
-        'tsncloudkey+'                      = ''
-        'rejuvenated ltd'                   = ''
-        'cutlers hall'                      = ''
-        'riverlinco - ucg ultra'            = ''
-        'british silverware'                = ''
-        'connect financial solutions'       = ''
-        'thornberry - retford'              = ''
-        'nightingale centre'                = ''
-        'ftg - mels house'                  = ''
-        'john bowman'                       = ''
-        'iti networks - head office'        = ''
-        'weston park - glossop road'        = ''
-        'harland works'                     = ''
-        'hallam removals'                   = ''
-        'colin beaumont - home'             = ''
-        'heeley city farm'                  = ''
-        'weston park - cavendish centre'    = ''
+        'default' = 'Affinity IT'
     }
 }
 
@@ -253,19 +178,13 @@ function Invoke-UniFiRequest {
 
     if ($QueryParams.Count -gt 0) {
         $queryString = ($QueryParams.GetEnumerator() | ForEach-Object {
-            # Preserve square brackets in parameter names (e.g. hostIds[]) — the API
-            # requires them unencoded. Values still get fully encoded.
-            $encodedKey = [System.Uri]::EscapeDataString($_.Key) -replace '%5B','[' -replace '%5D',']'
-            "$encodedKey=$([System.Uri]::EscapeDataString($_.Value.ToString()))"
+            "$([System.Uri]::EscapeDataString($_.Key))=$([System.Uri]::EscapeDataString($_.Value.ToString()))"
         }) -join '&'
         $uri = "${uri}?${queryString}"
     }
 
     try {
-        # Use Invoke-WebRequest -UseBasicParsing so .NET does not re-parse the URI
-        # through [System.Uri], which would re-encode brackets and colons in the path/query.
-        $raw      = Invoke-WebRequest -Uri $uri -Headers $headers -Method GET -UseBasicParsing
-        $response = $raw.Content | ConvertFrom-Json
+        $response = Invoke-RestMethod -Uri $uri -Headers $headers -Method GET -ContentType 'application/json'
         return $response
     }
     catch {
@@ -332,125 +251,33 @@ function Get-UniFiDevices {
     $pageSize = $Config.UnifiPageSize
 
     do {
-        # Build the query string manually — brackets in hostIds[] must not be percent-encoded
-        $encodedHostId = [System.Uri]::EscapeDataString($HostId)
-        $qs = "hostIds[]=$encodedHostId&pageSize=$pageSize"
-        if ($nextToken) { $qs += "&nextToken=$([System.Uri]::EscapeDataString($nextToken))" }
-        $uri = "$($Config.UnifiApiBase)/devices?$qs"
+        $params = @{
+            'hostIds[]' = $HostId
+            'pageSize'  = $pageSize
+        }
+        if ($nextToken) { $params['nextToken'] = $nextToken }
 
         try {
-            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
-
-            # Use the legacy Uri(string, dontEscape) constructor so .NET does not re-encode
-            # the brackets in hostIds[]. WebClient.DownloadString(Uri) then sends the URI as-is.
-            $uriObj = New-Object System.Uri($uri, $true)
-            $wc = [System.Net.WebClient]::new()
-            $wc.Headers.Add('Accept', 'application/json')
-            $wc.Headers.Add('X-API-Key', $Config.UnifiApiKey)
-            $raw = $wc.DownloadString($uriObj)
-            $wc.Dispose()
-
-            $response = $raw | ConvertFrom-Json
-
-            # /v1/devices returns { data: [ { hostId, hostName, devices: [...] }, ... ] }
-            # Each element in data is a host wrapper — we must unwrap .devices from each.
-            # Filter by hostId client-side in case the API ignores the hostIds[] query param
-            # (e.g. when the colon in the ID is percent-encoded and not recognised by the API).
-            $hostWrappers = if ($response.data) { $response.data }
-                            elseif ($response -is [array]) { $response }
-                            else { @() }
-
-            foreach ($wrapper in $hostWrappers) {
-                if ($wrapper.hostId -and $wrapper.hostId -ne $HostId) { continue }
-                $devs = if ($wrapper.devices) { $wrapper.devices }
-                        elseif ($wrapper.mac)  { @($wrapper) }   # item is already a device
-                        else                   { @() }
-                foreach ($device in $devs) { $allDevices.Add($device) }
+            $response = Invoke-UniFiRequest -Endpoint '/devices' -QueryParams $params
+            if ($response.data) {
+                foreach ($device in $response.data) {
+                    $allDevices.Add($device)
+                }
             }
-
+            elseif ($response -is [array]) {
+                foreach ($device in $response) {
+                    $allDevices.Add($device)
+                }
+            }
             $nextToken = if ($response.nextToken) { $response.nextToken } else { $null }
         }
         catch {
-            Write-Host "[ERROR] Failed to retrieve devices for host '$HostId': $_" -ForegroundColor Red
+            Write-Host "[ERROR] Failed to retrieve devices for host '$HostId'." -ForegroundColor Red
             return $allDevices
         }
     } while ($nextToken)
 
     return $allDevices
-}
-
-function Get-UniFiHost {
-    <#
-    .SYNOPSIS
-        Retrieves a host record from GET /v1/hosts/{id} and returns the hostName.
-        The hostName is the human-readable console name shown in the UniFi portal,
-        which is more reliable than site.meta.name for identifying client sites.
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [string]$HostId
-    )
-
-    try {
-        [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
-
-        # Build the URI as a string — colons are valid in path segments and must NOT be
-        # percent-encoded, as the API does not accept %3A in this position.
-        $uri = "$($Config.UnifiApiBase)/hosts/$HostId"
-
-        $headers = @{
-            'Accept'    = 'application/json'
-            'X-API-Key' = $Config.UnifiApiKey
-        }
-
-        # Use Invoke-WebRequest with -UseBasicParsing so .NET does not re-parse
-        # the URI and inadvertently re-encode the colon in the path segment.
-        $raw      = Invoke-WebRequest -Uri $uri -Headers $headers -Method GET -UseBasicParsing
-        $response = $raw.Content | ConvertFrom-Json
-
-        $hostObj = if ($response.data) { $response.data } else { $response }
-        if ($hostObj -and $hostObj.reportedState -and $hostObj.reportedState.name) {
-            return $hostObj.reportedState.name
-        }
-        if ($hostObj -and $hostObj.hostName) { return $hostObj.hostName }
-        if ($hostObj -and $hostObj.name)     { return $hostObj.name }
-        return $null
-    }
-    catch {
-        Write-Host "[WARNING] Could not retrieve host name for hostId '$HostId'. Falling back to site meta name." -ForegroundColor Yellow
-        return $null
-    }
-}
-
-function Get-UniFiHostNameMap {
-    <#
-    .SYNOPSIS
-        Builds a hashtable of hostId → hostName for all sites by finding the
-        console device (isConsole = true) per host and calling Get-UniFiHost.
-        Results are cached so each hostId is only queried once.
-    #>
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)]
-        [object[]]$Sites
-    )
-
-    $map = @{}
-    $uniqueHostIds = $Sites | Where-Object { $_.hostId } | ForEach-Object { $_.hostId } | Select-Object -Unique
-
-    foreach ($hostId in $uniqueHostIds) {
-        $hostName = Get-UniFiHost -HostId $hostId
-        if ($hostName) {
-            $map[$hostId] = $hostName
-            Write-Host "[INFO] Host '$hostId' → '$hostName'" -ForegroundColor Cyan
-        }
-        else {
-            $map[$hostId] = $null
-        }
-    }
-
-    return $map
 }
 
 #endregion UNIFI-API
@@ -648,19 +475,14 @@ function Invoke-AlertEvaluation {
         [object]$Site,
 
         [Parameter(Mandatory)]
-        [object[]]$Devices,
-
-        # Pre-resolved human-readable site name (from /v1/hosts lookup).
-        # Falls back to site.meta if not provided.
-        [string]$SiteDisplayName = ''
+        [object[]]$Devices
     )
 
     $alerts = [System.Collections.Generic.List[object]]::new()
 
-    # Use the pre-resolved display name if provided; otherwise fall back to meta fields
+    # Site name lives in meta.desc (human label) or meta.name (internal slug)
     $siteName = 'Unknown Site'
-    if ($SiteDisplayName)                    { $siteName = $SiteDisplayName }
-    elseif ($Site.meta -and $Site.meta.desc) { $siteName = $Site.meta.desc }
+    if ($Site.meta -and $Site.meta.desc)  { $siteName = $Site.meta.desc }
     elseif ($Site.meta -and $Site.meta.name) { $siteName = $Site.meta.name }
 
     # Shortcut to the statistics sub-objects
@@ -673,28 +495,14 @@ function Invoke-AlertEvaluation {
     $offlineCount  = if ($counts -and $null -ne $counts.offlineDevice)  { [int]$counts.offlineDevice }  else { ($Devices | Where-Object { $_.status -eq 'offline' }).Count }
     $gatewayCount  = if ($counts -and $null -ne $counts.gatewayDevice)  { [int]$counts.gatewayDevice }  else { ($Devices | Where-Object { $_.isConsole -eq $true }).Count }
 
-    # Collect offline devices up front so Alert 1 and Alert 8 can share the list
-    $offlineDevices = @($Devices | Where-Object { $_.status -eq 'offline' })
-
-    # Use the statistics count as the authoritative offline count — it includes devices the
-    # API may not have returned in the device list (e.g. unpaginated results). Fall back to
-    # the device list count only when statistics are unavailable.
-    $effectiveOfflineCount = if ($counts -and $null -ne $counts.offlineDevice) { [int]$counts.offlineDevice } else { $offlineDevices.Count }
-
     # Per-device alerts
     foreach ($device in $Devices) {
         $deviceName = if ($device.name)  { $device.name }
                       elseif ($device.model) { $device.model }
                       else { 'Unknown Device' }
 
-        # Log shortname to help diagnose FirmwareExclusions key mismatches
-        if ($device.shortname) {
-            Write-Host "[DEBUG] Device '$deviceName' shortname='$($device.shortname)' version='$($device.version)' firmwareStatus='$($device.firmwareStatus)'" -ForegroundColor DarkGray
-        }
-
-        # Alert 1: Device Offline — only raised individually when exactly one device is offline.
-        # When multiple devices are offline the consolidated Alert 8 covers them all.
-        if ($device.status -eq 'offline' -and $effectiveOfflineCount -eq 1) {
+        # Alert 1: Device Offline
+        if ($device.status -eq 'offline') {
             $alerts.Add([pscustomobject]@{
                 AlertType  = 'DeviceOffline'
                 Priority   = 'Critical'
@@ -708,38 +516,23 @@ function Invoke-AlertEvaluation {
 
         # Alert 2: Firmware Update Available
         if ($device.firmwareStatus -and $device.firmwareStatus -ne 'upToDate') {
-            $excludedVersions = if ($device.shortname -and $Config.FirmwareExclusions -and $Config.FirmwareExclusions.ContainsKey($device.shortname)) {
-                $Config.FirmwareExclusions[$device.shortname]
-            } else { @() }
-            $firmwareExcluded = $device.version -and ($excludedVersions -contains $device.version)
-
-            if (-not $firmwareExcluded) {
-                $alerts.Add([pscustomobject]@{
-                    AlertType  = 'FirmwareUpdateAvailable'
-                    Priority   = 'High'
-                    Title      = "MAINTENANCE REQUIRED -- ${siteName}: Firmware update available for ${deviceName}"
-                    SiteName   = $siteName
-                    DeviceName = $deviceName
-                    DeviceData = $device
-                    SiteData   = $Site
-                })
-            }
-            else {
-                Write-Host "[INFO] Firmware alert suppressed for '$deviceName' ($($device.shortname) v$($device.version)) — version excluded in FirmwareExclusions" -ForegroundColor Cyan
-            }
+            $alerts.Add([pscustomobject]@{
+                AlertType  = 'FirmwareUpdateAvailable'
+                Priority   = 'High'
+                Title      = "MAINTENANCE REQUIRED -- ${siteName}: Firmware update available for ${deviceName}"
+                SiteName   = $siteName
+                DeviceName = $deviceName
+                DeviceData = $device
+                SiteData   = $Site
+            })
         }
     }
 
     # Alerts 3 & 4: TX Retry Rate — from site statistics.percentages.txRetry
-    # For site-level alerts, attach the gateway/console device so tickets show real device info.
-    $gatewayDevice = $Devices | Where-Object { $_.isConsole -eq $true } | Select-Object -First 1
-    if (-not $gatewayDevice) { $gatewayDevice = $Devices | Select-Object -First 1 }
-
     $txRetryRate = if ($pct -and $null -ne $pct.txRetry) { [double]$pct.txRetry } else { $null }
 
     if ($null -ne $txRetryRate) {
         $rateRounded = [math]::Round($txRetryRate, 1)
-        $gwName = if ($gatewayDevice -and $gatewayDevice.name) { $gatewayDevice.name } else { 'N/A' }
 
         if ($txRetryRate -gt $Config.TxRetryCriticalPct) {
             $alerts.Add([pscustomobject]@{
@@ -747,8 +540,8 @@ function Invoke-AlertEvaluation {
                 Priority   = 'Critical'
                 Title      = "NETWORK CRITICAL -- ${siteName}: Critical WAN retry rate (${rateRounded}%)"
                 SiteName   = $siteName
-                DeviceName = $gwName
-                DeviceData = $gatewayDevice
+                DeviceName = 'N/A'
+                DeviceData = $null
                 SiteData   = $Site
             })
         }
@@ -758,8 +551,8 @@ function Invoke-AlertEvaluation {
                 Priority   = 'Medium'
                 Title      = "NETWORK DEGRADED -- ${siteName}: Elevated WAN retry rate (${rateRounded}%)"
                 SiteName   = $siteName
-                DeviceName = $gwName
-                DeviceData = $gatewayDevice
+                DeviceName = 'N/A'
+                DeviceData = $null
                 SiteData   = $Site
             })
         }
@@ -775,8 +568,8 @@ function Invoke-AlertEvaluation {
             Priority   = 'High'
             Title      = "WAN ISSUE -- ${siteName}: WAN uptime below threshold (${uptimeRounded}%)"
             SiteName   = $siteName
-            DeviceName = if ($gatewayDevice -and $gatewayDevice.name) { $gatewayDevice.name } else { 'N/A' }
-            DeviceData = $gatewayDevice
+            DeviceName = 'N/A'
+            DeviceData = $null
             SiteData   = $Site
         })
     }
@@ -790,53 +583,55 @@ function Invoke-AlertEvaluation {
             Priority   = 'High'
             Title      = "ALERT -- ${siteName}: ${criticalNotifCount} critical notification(s) on controller"
             SiteName   = $siteName
-            DeviceName = if ($gatewayDevice -and $gatewayDevice.name) { $gatewayDevice.name } else { 'N/A' }
-            DeviceData = $gatewayDevice
+            DeviceName = 'N/A'
+            DeviceData = $null
             SiteData   = $Site
         })
     }
 
     # Alert 7: Internet Issues — from site statistics.internetIssues (array)
-    # Only raised when WAN uptime is also degraded, to suppress transient/minor events.
     $internetIssues = if ($stats -and $stats.internetIssues) { $stats.internetIssues } else { $null }
     $hasInternetIssues = ($internetIssues -is [array] -and $internetIssues.Count -gt 0) -or
                          ($internetIssues -is [bool] -and $internetIssues)
-    $wanUptimeForIssues = if ($pct -and $null -ne $pct.wanUptime) { [double]$pct.wanUptime } else { $null }
-    $wanUptimeDegraded  = ($null -ne $wanUptimeForIssues) -and ($wanUptimeForIssues -lt $Config.WanUptimeWarningPct)
 
-    if ($hasInternetIssues -and $wanUptimeDegraded) {
+    if ($hasInternetIssues) {
         $alerts.Add([pscustomobject]@{
             AlertType  = 'InternetIssuesDetected'
             Priority   = 'High'
             Title      = "CONNECTIVITY ISSUE -- ${siteName}: Internet issues detected by controller"
             SiteName   = $siteName
-            DeviceName = if ($gatewayDevice -and $gatewayDevice.name) { $gatewayDevice.name } else { 'N/A' }
-            DeviceData = $gatewayDevice
+            DeviceName = 'N/A'
+            DeviceData = $null
             SiteData   = $Site
         })
     }
 
-    # Alert 8: Multiple Devices Offline
-    if ($effectiveOfflineCount -gt 1) {
-        # Build a device name list from the devices we actually enumerated
-        $offlineNameList = if ($offlineDevices.Count -gt 0) {
-            ($offlineDevices | ForEach-Object {
-                if ($_.name) { $_.name } elseif ($_.model) { $_.model } else { 'Unknown' }
-            }) -join ', '
-        } else { 'Unknown (device list unavailable)' }
-
+    # Alert 8: Multiple Devices Offline — from statistics.counts.offlineDevice
+    if ($offlineCount -gt 1) {
         $alerts.Add([pscustomobject]@{
-            AlertType        = 'MultipleDevicesOffline'
-            Priority         = 'Critical'
-            Title            = "NETWORK OUTAGE -- ${siteName}: ${multiOfflineCount} devices offline simultaneously"
-            SiteName         = $siteName
-            DeviceName       = if ($gatewayDevice -and $gatewayDevice.name) { $gatewayDevice.name } else { 'Multiple' }
-            DeviceData       = $gatewayDevice
-            SiteData         = $Site
-            OfflineNameList  = $offlineNameList
+            AlertType  = 'MultipleDevicesOffline'
+            Priority   = 'Critical'
+            Title      = "NETWORK OUTAGE -- ${siteName}: ${offlineCount} devices offline simultaneously"
+            SiteName   = $siteName
+            DeviceName = 'Multiple'
+            DeviceData = $null
+            SiteData   = $Site
         })
     }
 
+    # Alert 9: No Gateway Device — from statistics.counts.gatewayDevice
+    $totalDeviceCount = if ($counts -and $null -ne $counts.totalDevice) { [int]$counts.totalDevice } else { $Devices.Count }
+    if ($totalDeviceCount -gt 0 -and $gatewayCount -eq 0) {
+        $alerts.Add([pscustomobject]@{
+            AlertType  = 'NoGatewayDevice'
+            Priority   = 'Critical'
+            Title      = "CRITICAL -- ${siteName}: No gateway device detected on site"
+            SiteName   = $siteName
+            DeviceName = 'N/A'
+            DeviceData = $null
+            SiteData   = $Site
+        })
+    }
 
     return $alerts.ToArray()
 }
@@ -974,57 +769,48 @@ function Build-TicketDescription {
         'WanUptimeDegraded'            { "WAN uptime at site '$($Alert.SiteName)' has fallen below the acceptable threshold, indicating connectivity instability." }
         'CriticalNotificationsPresent' { "One or more critical notifications are present on the UniFi controller for site '$($Alert.SiteName)'." }
         'InternetIssuesDetected'       { "The UniFi controller has detected internet connectivity issues at site '$($Alert.SiteName)'." }
-        'MultipleDevicesOffline'       {
-            $nameList = if ($Alert.OfflineNameList) { " Offline: $($Alert.OfflineNameList)." } else { '' }
-            "Multiple network devices are offline simultaneously at site '$($Alert.SiteName)', indicating a potential site-wide outage.$nameList"
-        }
+        'MultipleDevicesOffline'       { "Multiple network devices are offline simultaneously at site '$($Alert.SiteName)', indicating a potential site-wide outage." }
         'NoGatewayDevice'              { "No gateway device is detected on site '$($Alert.SiteName)'. All network connectivity may be affected." }
         default                        { "An alert condition has been detected at site '$($Alert.SiteName)' requiring review." }
     }
 
-    # Build ticket body — omit any field whose value resolved to N/A
-    $lines = [System.Collections.Generic.List[string]]::new()
+    $description = @"
+ALERT SUMMARY
+=============
+$alertSummary
 
-    $lines.Add('ALERT SUMMARY')
-    $lines.Add('=============')
-    $lines.Add($alertSummary)
-    $lines.Add('')
-    $lines.Add('DEVICE DETAILS')
-    $lines.Add('==============')
-    if ($devName     -ne 'N/A') { $lines.Add("Device Name   : $devName") }
-    if ($devMac      -ne 'N/A') { $lines.Add("MAC Address   : $devMac") }
-    if ($devIp       -ne 'N/A') { $lines.Add("IP Address    : $devIp") }
-    if ($devModel    -ne 'N/A') { $lines.Add("Model         : $devModel") }
-    if ($devFirmware -ne 'N/A' -and $devFirmware -ne '') { $lines.Add("Firmware      : $devFirmware") }
-    $lines.Add("Site Name     : $($Alert.SiteName)")
-    if ($siteHostId  -ne 'N/A') { $lines.Add("Host ID       : $siteHostId") }
-    $lines.Add('')
+DEVICE DETAILS
+==============
+Device Name   : $devName
+MAC Address   : $devMac
+IP Address    : $devIp
+Model         : $devModel
+Firmware      : $devFirmware
+Site Name     : $($Alert.SiteName)
+Host ID       : $siteHostId
 
-    # Only include the Network Context section if at least one value is available
-    $netLines = [System.Collections.Generic.List[string]]::new()
-    if ($wanUptime     -ne 'N/A') { $netLines.Add("WAN Uptime    : $wanUptime%") }
-    if ($txRetry       -ne 'N/A') { $netLines.Add("TX Retry Rate : $txRetry%") }
-    if ($ispName       -ne 'N/A') { $netLines.Add("ISP Name      : $ispName") }
-    if ($ispAsn        -ne 'N/A') { $netLines.Add("ISP ASN       : $ispAsn") }
-    if ($externalIp    -ne 'N/A') { $netLines.Add("External IP   : $externalIp") }
-    if ($wiredClients  -ne 'N/A') { $netLines.Add("Wired Clients : $wiredClients") }
-    if ($wifiClients   -ne 'N/A') { $netLines.Add("Wifi Clients  : $wifiClients") }
-    if ($netLines.Count -gt 0) {
-        $lines.Add('NETWORK CONTEXT')
-        $lines.Add('===============')
-        foreach ($nl in $netLines) { $lines.Add($nl) }
-        $lines.Add('')
-    }
+NETWORK CONTEXT
+===============
+WAN Uptime    : $wanUptime%
+TX Retry Rate : $txRetry%
+ISP Name      : $ispName
+ISP ASN       : $ispAsn
+External IP   : $externalIp
+Wired Clients : $wiredClients
+Wifi Clients  : $wifiClients
 
-    $lines.Add('DETECTED AT')
-    $lines.Add('===========')
-    $lines.Add($ts)
-    $lines.Add('')
-    $lines.Add('RECOMMENDED MITIGATION')
-    $lines.Add('======================')
-    $lines.Add($mitigationSteps)
+DETECTED AT
+===========
+$ts
 
-    $description = $lines -join "`n"
+RECOMMENDED MITIGATION
+======================
+$mitigationSteps
+FURTHER INFORMATION
+===================
+https://help.ui.com/hc/en-us/categories/200320654-UniFi-Network
+"@
+
     return $description
 }
 
@@ -1065,45 +851,41 @@ function Write-TicketPreview {
 
     $border = '=' * 65
 
-    $companyDisplay   = if ($CompanyName) { $CompanyName } else { 'Unknown' }
+    Write-Host "`n╔══ TICKET PREVIEW [$Index of $Total] $border" -ForegroundColor Cyan
+
+    Write-Host "  TITLE    : $($Alert.Title)" -ForegroundColor White
+
+    $companyDisplay = if ($CompanyName) { $CompanyName } else { 'Unknown' }
     $companyIdDisplay = if ($null -ne $CompanyId) { " (ID: $CompanyId)" } else { '' }
-    $contactDisplay   = if ($Contact) {
-        $cName  = "$($Contact.firstName) $($Contact.lastName)".Trim()
+    Write-Host "  COMPANY  : $companyDisplay$companyIdDisplay" -ForegroundColor White
+
+    $contactDisplay = if ($Contact) {
+        $cName = "$($Contact.firstName) $($Contact.lastName)".Trim()
         $cEmail = if ($Contact.emailAddress) { " ($($Contact.emailAddress))" } else { '' }
         "$cName$cEmail"
-    } else { 'No contact found' }
-    $suppressedLine = if ($SuppressedTicket) { "  [SUPPRESSED -- WOULD NOT CREATE] Existing ticket ID: $($SuppressedTicket.id)" } else { $null }
-
-    Write-Host "`n╔══ TICKET PREVIEW [$Index of $Total] $border" -ForegroundColor Cyan
-    Write-Host "  TITLE    : $($Alert.Title)" -ForegroundColor White
-    Write-Host "  COMPANY  : $companyDisplay$companyIdDisplay" -ForegroundColor White
+    }
+    else { 'No contact found' }
     Write-Host "  CONTACT  : $contactDisplay" -ForegroundColor White
+
     $priorityColor = switch ($Alert.Priority) {
-        'Critical' { 'Red' }; 'High' { 'Yellow' }; 'Medium' { 'Green' }; default { 'White' }
+        'Critical' { 'Red' }
+        'High'     { 'Yellow' }
+        'Medium'   { 'Green' }
+        default    { 'White' }
     }
     Write-Host "  PRIORITY : $($Alert.Priority.ToUpper())" -ForegroundColor $priorityColor
-    Write-Host "  QUEUE    : (ID: $($Config.TicketQueueId))" -ForegroundColor White
-    if ($suppressedLine) { Write-Host $suppressedLine -ForegroundColor Yellow }
-    Write-Host "  -- DESCRIPTION PREVIEW $('-' * 46)" -ForegroundColor Cyan
-    $Description -split "`n" | ForEach-Object { Write-Host "  $_" -ForegroundColor Gray }
-    Write-Host "╚$('=' * 65)╝" -ForegroundColor Cyan
 
-    # Optionally append to file
-    if ($Config.TestModeOutputFile) {
-        $fileLines = [System.Collections.Generic.List[string]]::new()
-        $fileLines.Add('')
-        $fileLines.Add("╔══ TICKET PREVIEW [$Index of $Total] $border")
-        $fileLines.Add("  TITLE    : $($Alert.Title)")
-        $fileLines.Add("  COMPANY  : $companyDisplay$companyIdDisplay")
-        $fileLines.Add("  CONTACT  : $contactDisplay")
-        $fileLines.Add("  PRIORITY : $($Alert.Priority.ToUpper())")
-        $fileLines.Add("  QUEUE    : (ID: $($Config.TicketQueueId))")
-        if ($suppressedLine) { $fileLines.Add($suppressedLine) }
-        $fileLines.Add("  -- DESCRIPTION PREVIEW $('-' * 46)")
-        $Description -split "`n" | ForEach-Object { $fileLines.Add("  $_") }
-        $fileLines.Add("╚$('=' * 65)╝")
-        $fileLines | Add-Content -Path $Config.TestModeOutputFile -Encoding UTF8
+    Write-Host "  QUEUE    : (ID: $($Config.TicketQueueId))" -ForegroundColor White
+
+    if ($SuppressedTicket) {
+        Write-Host "  [SUPPRESSED -- WOULD NOT CREATE] Existing ticket ID: $($SuppressedTicket.id)" -ForegroundColor Yellow
     }
+
+    Write-Host "  -- DESCRIPTION PREVIEW $('-' * 46)" -ForegroundColor Cyan
+    $Description -split "`n" | ForEach-Object {
+        Write-Host "  $_" -ForegroundColor Gray
+    }
+    Write-Host "╚$('=' * 65)╝" -ForegroundColor Cyan
 }
 
 function Write-RunSummary {
@@ -1141,11 +923,11 @@ function Resolve-CompanyAndContact {
         [string]$SiteName
     )
 
-    # Step 1: lowercase and trim site name, look up in SiteMapping
-    $siteNameLower = $SiteName.Trim().ToLower()
+    # Step 1: lowercase site name, look up in SiteMapping
+    $siteNameLower = $SiteName.ToLower()
     $mappedCompanyName = $null
 
-    if ($Config.SiteMapping.ContainsKey($siteNameLower) -and $Config.SiteMapping[$siteNameLower]) {
+    if ($Config.SiteMapping.ContainsKey($siteNameLower)) {
         $mappedCompanyName = $Config.SiteMapping[$siteNameLower]
     }
     else {
@@ -1187,9 +969,6 @@ function Invoke-Main {
     [CmdletBinding()]
     param()
 
-    # Resolve effective test mode — config variable or command-line switch
-    $effectiveTestMode = $TestMode -or ($Config.TestMode -eq $true)
-
     # Counters
     $sitesChecked      = 0
     $devicesChecked    = 0
@@ -1198,7 +977,7 @@ function Invoke-Main {
     $ticketsSuppressed = 0
     $errorsEncountered = 0
 
-    if ($effectiveTestMode) {
+    if ($TestMode) {
         Write-Host "`n*** TEST MODE -- No tickets have been or will be raised during this run ***`n" -ForegroundColor Yellow
     }
 
@@ -1211,59 +990,25 @@ function Invoke-Main {
     catch {
         Write-Host "[ERROR] Failed to retrieve UniFi sites. Aborting." -ForegroundColor Red
         $errorsEncountered++
-        Write-RunSummary -SitesChecked 0 -DevicesChecked 0 -AlertsTriggered 0 -TicketsRaised 0 -TicketsSuppressed 0 -ErrorsEncountered $errorsEncountered -IsTestMode:$effectiveTestMode
+        Write-RunSummary -SitesChecked 0 -DevicesChecked 0 -AlertsTriggered 0 -TicketsRaised 0 -TicketsSuppressed 0 -ErrorsEncountered $errorsEncountered -IsTestMode:$TestMode
         return
     }
 
     if (-not $sites -or $sites.Count -eq 0) {
         Write-Host "[WARNING] No sites returned from UniFi API." -ForegroundColor Yellow
-        Write-RunSummary -SitesChecked 0 -DevicesChecked 0 -AlertsTriggered 0 -TicketsRaised 0 -TicketsSuppressed 0 -ErrorsEncountered $errorsEncountered -IsTestMode:$effectiveTestMode
+        Write-RunSummary -SitesChecked 0 -DevicesChecked 0 -AlertsTriggered 0 -TicketsRaised 0 -TicketsSuppressed 0 -ErrorsEncountered $errorsEncountered -IsTestMode:$TestMode
         return
     }
 
     Write-Host "[INFO] Found $($sites.Count) site(s)." -ForegroundColor Cyan
-
-    # The /v1/sites API returns one entry per network, not per host. A controller managing
-    # multiple networks returns multiple entries sharing the same hostId. Deduplicate by
-    # hostId so each physical host is only processed once.
-    $seenHostIds = [System.Collections.Generic.HashSet[string]]::new()
-    $uniqueSites = [System.Collections.Generic.List[object]]::new()
-    foreach ($site in $sites) {
-        $hid = if ($site.hostId) { $site.hostId } else { $null }
-        if ($hid) {
-            if ($seenHostIds.Add($hid)) { $uniqueSites.Add($site) }
-        } else {
-            $uniqueSites.Add($site)
-        }
-    }
-    Write-Host "[INFO] $($uniqueSites.Count) unique host(s) to process after deduplication." -ForegroundColor Cyan
-    $sites = $uniqueSites
-
-    # Build hostId → hostName lookup using GET /v1/hosts/{id}.
-    # This gives the real human-readable console name rather than the internal meta slug.
-    Write-Host "[INFO] Resolving host names from UniFi API..." -ForegroundColor Cyan
-    $hostNameMap = Get-UniFiHostNameMap -Sites @($sites)
 
     # Collect all alerts from all sites first (for preview count in TestMode)
     $allAlertData = [System.Collections.Generic.List[object]]::new()
 
     foreach ($site in $sites) {
         $sitesChecked++
-        $hostId = if ($site.hostId) { $site.hostId } else { $null }
-
-        # Prefer hostName from /v1/hosts lookup; fall back to meta.desc / meta.name
-        $siteDisplayName = $null
-        if ($hostId -and $hostNameMap.ContainsKey($hostId) -and $hostNameMap[$hostId]) {
-            $siteDisplayName = $hostNameMap[$hostId].Trim()
-        }
-        if (-not $siteDisplayName -and $site.meta -and $site.meta.desc)  { $siteDisplayName = $site.meta.desc.Trim() }
-        if (-not $siteDisplayName -and $site.meta -and $site.meta.name)  { $siteDisplayName = $site.meta.name.Trim() }
-        if (-not $siteDisplayName) { $siteDisplayName = "Site[$sitesChecked]" }
-
-        # Skip sites listed in SiteExclusions (case-insensitive)
-        if ($Config.SiteExclusions -and ($Config.SiteExclusions -contains $siteDisplayName.ToLower())) {
-            continue
-        }
+        $siteDisplayName = if ($site.meta -and $site.meta.desc) { $site.meta.desc } elseif ($site.meta -and $site.meta.name) { $site.meta.name } else { "Site[$sitesChecked]" }
+        $hostId = if ($site.hostId) { $site.hostId } elseif ($site.id) { $site.id } else { $null }
 
         Write-Host "[INFO] Processing site: '$siteDisplayName'" -ForegroundColor Cyan
 
@@ -1290,7 +1035,7 @@ function Invoke-Main {
         # Evaluate alerts
         $alerts = @()
         try {
-            $alerts = Invoke-AlertEvaluation -Site $site -Devices $devices -SiteDisplayName $siteDisplayName
+            $alerts = Invoke-AlertEvaluation -Site $site -Devices $devices
         }
         catch {
             Write-Host "[ERROR] Alert evaluation failed for site '$siteDisplayName': $_" -ForegroundColor Red
@@ -1315,285 +1060,113 @@ function Invoke-Main {
 
     if ($alertsTriggered -eq 0) {
         Write-Host "[INFO] No alerts triggered. Network looks healthy." -ForegroundColor Green
-        Write-RunSummary -SitesChecked $sitesChecked -DevicesChecked $devicesChecked -AlertsTriggered 0 -TicketsRaised 0 -TicketsSuppressed 0 -ErrorsEncountered $errorsEncountered -IsTestMode:$effectiveTestMode
+        Write-RunSummary -SitesChecked $sitesChecked -DevicesChecked $devicesChecked -AlertsTriggered 0 -TicketsRaised 0 -TicketsSuppressed 0 -ErrorsEncountered $errorsEncountered -IsTestMode:$TestMode
         return
     }
 
     Write-Host "[INFO] Total alerts to process: $alertsTriggered" -ForegroundColor Cyan
 
-    # Write file header if outputting to file in test mode
-    if ($effectiveTestMode -and $Config.TestModeOutputFile) {
-        $runTs   = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
-        $header  = [System.Collections.Generic.List[string]]::new()
-        $header.Add("UniFi Alert Bridge -- Test Mode Preview")
-        $header.Add("Run timestamp : $runTs")
-        $header.Add("Total alerts  : $alertsTriggered")
-        $header.Add("Grouped       : $(if ($Config.GroupAlertsBySite) { 'Yes (one ticket per site)' } else { 'No (one ticket per alert)' })")
-        $header.Add('=' * 70)
-        $header | Set-Content -Path $Config.TestModeOutputFile -Encoding UTF8
-    }
+    # Process each alert
+    $previewIndex = 0
+    foreach ($alertEntry in $allAlertData) {
+        $alert = $alertEntry.Alert
+        $previewIndex++
 
-    # Build the list of work items: either one per alert, or one per site (grouped)
-    if ($Config.GroupAlertsBySite) {
-        # Group allAlertData by SiteName
-        $siteGroups = [System.Collections.Generic.Dictionary[string,System.Collections.Generic.List[object]]]::new()
-        foreach ($entry in $allAlertData) {
-            $sn = $entry.Alert.SiteName
-            if (-not $siteGroups.ContainsKey($sn)) {
-                $siteGroups[$sn] = [System.Collections.Generic.List[object]]::new()
-            }
-            $siteGroups[$sn].Add($entry)
+        # Resolve company and contact
+        $resolution = $null
+        try {
+            $resolution = Resolve-CompanyAndContact -SiteName $alert.SiteName
         }
-        $totalAlerts = $siteGroups.Count
-        Write-Host "[INFO] GroupAlertsBySite enabled -- $($siteGroups.Count) site ticket(s) to process." -ForegroundColor Cyan
+        catch {
+            Write-Host "[ERROR] Failed to resolve company/contact for site '$($alert.SiteName)': $_" -ForegroundColor Red
+            $errorsEncountered++
+            continue
+        }
 
-        $previewIndex = 0
-        foreach ($siteName in $siteGroups.Keys) {
-            $entries = $siteGroups[$siteName]
-            $previewIndex++
+        $companyName = $resolution.CompanyName
+        $companyId   = $resolution.CompanyId
+        $contact     = $resolution.Contact
+        $contactId   = if ($contact -and $contact.id) { $contact.id } else { $null }
 
-            # Enforce MaxTicketsPerRun
-            $ticketCount = $ticketsRaised + $ticketsSuppressed
-            if ($Config.MaxTicketsPerRun -gt 0 -and $ticketCount -ge $Config.MaxTicketsPerRun) {
-                $remaining = $siteGroups.Count - $previewIndex + 1
-                Write-Host "[WARNING] MaxTicketsPerRun ($($Config.MaxTicketsPerRun)) reached. Skipping $remaining remaining site(s)." -ForegroundColor Yellow
-                break
-            }
+        # Build description
+        $description = Build-TicketDescription -Alert $alert
 
-            # Highest priority across all alerts for this site
-            $priorityOrder = @{ 'Critical' = 0; 'High' = 1; 'Medium' = 2; 'Low' = 3 }
-            $topPriority = $entries | Sort-Object { $priorityOrder[$_.Alert.Priority] } | Select-Object -First 1
-            $groupPriority = $topPriority.Alert.Priority
-
-            # Combined title
-            $issueCount  = $entries.Count
-            $groupTitle  = "NETWORK ALERT -- $siteName`: $issueCount issue(s) detected"
-
-            # Combined description: header then each alert's description separated by dividers
-            $combinedParts = [System.Collections.Generic.List[string]]::new()
-            $combinedParts.Add("$issueCount alert(s) detected for site: $siteName")
-            $combinedParts.Add('')
-            $divider = '-' * 60
-            for ($i = 0; $i -lt $entries.Count; $i++) {
-                $combinedParts.Add("[$($i + 1) of $issueCount] $($entries[$i].Alert.Title)")
-                $combinedParts.Add($divider)
-                $combinedParts.Add((Build-TicketDescription -Alert $entries[$i].Alert))
-                if ($i -lt ($entries.Count - 1)) { $combinedParts.Add('') }
-            }
-            $groupDescription = $combinedParts -join "`n"
-
-            # Use the first alert as the representative for company/contact resolution
-            $firstAlert = $entries[0].Alert
-
-            # Build a synthetic alert object for preview/ticket functions
-            $groupAlert = [pscustomobject]@{
-                Title      = $groupTitle
-                SiteName   = $siteName
-                Priority   = $groupPriority
-                DeviceData = $firstAlert.DeviceData
-                SiteData   = $firstAlert.SiteData
-                Mitigation = ''
-                FurtherInfo = ''
-            }
-
-            # Resolve company and contact
-            $resolution = $null
+        # Duplicate suppression
+        $suppressedTicket = $null
+        if ($null -ne $companyId) {
             try {
-                $resolution = Resolve-CompanyAndContact -SiteName $siteName
+                $suppressedTicket = Get-ExistingOpenTicket `
+                    -Title $alert.Title `
+                    -CompanyId ([int]$companyId) `
+                    -ClosedStatusIds $Config.ClosedStatusIds
             }
             catch {
-                Write-Host "[ERROR] Failed to resolve company/contact for site '$siteName': $_" -ForegroundColor Red
-                $errorsEncountered++
-                continue
-            }
-
-            $companyName = $resolution.CompanyName
-            $companyId   = $resolution.CompanyId
-            $contact     = $resolution.Contact
-            $contactId   = if ($contact -and $contact.id) { $contact.id } else { $null }
-
-            # Duplicate suppression
-            $suppressedTicket = $null
-            if ($null -ne $companyId) {
-                try {
-                    $suppressedTicket = Get-ExistingOpenTicket `
-                        -Title $groupTitle `
-                        -CompanyId ([int]$companyId) `
-                        -ClosedStatusIds $Config.ClosedStatusIds
-                }
-                catch {
-                    Write-Host "[ERROR] Duplicate check failed for '$groupTitle': $_" -ForegroundColor Red
-                    $errorsEncountered++
-                }
-            }
-
-            if ($effectiveTestMode) {
-                Write-TicketPreview `
-                    -Alert $groupAlert `
-                    -Index $previewIndex `
-                    -Total $totalAlerts `
-                    -CompanyName $companyName `
-                    -CompanyId $companyId `
-                    -Contact $contact `
-                    -Description $groupDescription `
-                    -SuppressedTicket $suppressedTicket
-
-                if ($suppressedTicket) { $ticketsSuppressed++ } else { $ticketsRaised++ }
-                continue
-            }
-
-            # Live mode
-            if ($suppressedTicket) {
-                Write-Host "[SUPPRESSED] Open ticket already exists (ID: $($suppressedTicket.id)) -- $groupTitle" -ForegroundColor Yellow
-                $ticketsSuppressed++
-                continue
-            }
-
-            $ticketPayload = @{
-                title       = $groupTitle
-                companyID   = $companyId
-                queueID     = $Config.TicketQueueId
-                status      = $Config.TicketStatusNew
-                source      = $Config.TicketSourceMonitor
-                priority    = Get-PriorityInt -Priority $groupPriority
-                description = $groupDescription
-            }
-            if ($null -ne $contactId) { $ticketPayload['contactID'] = $contactId }
-
-            Write-Host "[INFO] Creating grouped ticket: $groupTitle" -ForegroundColor Cyan
-            try {
-                $result = New-AutotaskTicket -TicketData $ticketPayload
-                if ($result -and ($result.id -or $result.itemId)) {
-                    $newId = if ($result.id) { $result.id } elseif ($result.itemId) { $result.itemId } else { 'unknown' }
-                    Write-Host "[SUCCESS] Ticket created (ID: $newId): $groupTitle" -ForegroundColor Green
-                    $ticketsRaised++
-                }
-                elseif ($result) {
-                    Write-Host "[SUCCESS] Ticket created: $groupTitle" -ForegroundColor Green
-                    $ticketsRaised++
-                }
-                else {
-                    Write-Host "[ERROR] Ticket creation returned no result for: $groupTitle" -ForegroundColor Red
-                    $errorsEncountered++
-                }
-            }
-            catch {
-                Write-Host "[ERROR] Ticket creation threw an exception for '$groupTitle': $_" -ForegroundColor Red
+                Write-Host "[ERROR] Duplicate check failed for '$($alert.Title)': $_" -ForegroundColor Red
                 $errorsEncountered++
             }
         }
-    }
-    else {
-        # One ticket per alert (original behaviour)
-        $previewIndex = 0
-        foreach ($alertEntry in $allAlertData) {
-            $alert = $alertEntry.Alert
-            $previewIndex++
 
-            # Enforce MaxTicketsPerRun limit (0 = unlimited)
-            $ticketCount = $ticketsRaised + $ticketsSuppressed
-            if ($Config.MaxTicketsPerRun -gt 0 -and $ticketCount -ge $Config.MaxTicketsPerRun) {
-                $remaining = $allAlertData.Count - $previewIndex + 1
-                Write-Host "[WARNING] MaxTicketsPerRun ($($Config.MaxTicketsPerRun)) reached. Skipping $remaining remaining alert(s)." -ForegroundColor Yellow
-                break
-            }
+        if ($TestMode) {
+            Write-TicketPreview `
+                -Alert $alert `
+                -Index $previewIndex `
+                -Total $totalAlerts `
+                -CompanyName $companyName `
+                -CompanyId $companyId `
+                -Contact $contact `
+                -Description $description `
+                -SuppressedTicket $suppressedTicket
 
-            # Resolve company and contact
-            $resolution = $null
-            try {
-                $resolution = Resolve-CompanyAndContact -SiteName $alert.SiteName
-            }
-            catch {
-                Write-Host "[ERROR] Failed to resolve company/contact for site '$($alert.SiteName)': $_" -ForegroundColor Red
-                $errorsEncountered++
-                continue
-            }
-
-            $companyName = $resolution.CompanyName
-            $companyId   = $resolution.CompanyId
-            $contact     = $resolution.Contact
-            $contactId   = if ($contact -and $contact.id) { $contact.id } else { $null }
-
-            # Build description
-            $description = Build-TicketDescription -Alert $alert
-
-            # Duplicate suppression
-            $suppressedTicket = $null
-            if ($null -ne $companyId) {
-                try {
-                    $suppressedTicket = Get-ExistingOpenTicket `
-                        -Title $alert.Title `
-                        -CompanyId ([int]$companyId) `
-                        -ClosedStatusIds $Config.ClosedStatusIds
-                }
-                catch {
-                    Write-Host "[ERROR] Duplicate check failed for '$($alert.Title)': $_" -ForegroundColor Red
-                    $errorsEncountered++
-                }
-            }
-
-            if ($effectiveTestMode) {
-                Write-TicketPreview `
-                    -Alert $alert `
-                    -Index $previewIndex `
-                    -Total $totalAlerts `
-                    -CompanyName $companyName `
-                    -CompanyId $companyId `
-                    -Contact $contact `
-                    -Description $description `
-                    -SuppressedTicket $suppressedTicket
-
-                if ($suppressedTicket) {
-                    $ticketsSuppressed++
-                }
-                else {
-                    $ticketsRaised++
-                }
-                continue
-            }
-
-            # Live mode
             if ($suppressedTicket) {
-                Write-Host "[SUPPRESSED] Open ticket already exists (ID: $($suppressedTicket.id)) -- $($alert.Title)" -ForegroundColor Yellow
                 $ticketsSuppressed++
-                continue
             }
+            else {
+                $ticketsRaised++
+            }
+            continue
+        }
 
-            # Build ticket payload
-            $ticketPayload = @{
-                title       = $alert.Title
-                companyID   = $companyId
-                queueID     = $Config.TicketQueueId
-                status      = $Config.TicketStatusNew
-                source      = $Config.TicketSourceMonitor
-                priority    = Get-PriorityInt -Priority $alert.Priority
-                description = $description
-            }
-            if ($null -ne $contactId) {
-                $ticketPayload['contactID'] = $contactId
-            }
+        # Live mode
+        if ($suppressedTicket) {
+            Write-Host "[SUPPRESSED] Open ticket already exists (ID: $($suppressedTicket.id)) -- $($alert.Title)" -ForegroundColor Yellow
+            $ticketsSuppressed++
+            continue
+        }
 
-            Write-Host "[INFO] Creating ticket: $($alert.Title)" -ForegroundColor Cyan
-            try {
-                $result = New-AutotaskTicket -TicketData $ticketPayload
-                if ($result -and ($result.id -or ($result.itemId))) {
-                    $newId = if ($result.id) { $result.id } elseif ($result.itemId) { $result.itemId } else { 'unknown' }
-                    Write-Host "[SUCCESS] Ticket created (ID: $newId): $($alert.Title)" -ForegroundColor Green
-                    $ticketsRaised++
-                }
-                elseif ($result) {
-                    Write-Host "[SUCCESS] Ticket created: $($alert.Title)" -ForegroundColor Green
-                    $ticketsRaised++
-                }
-                else {
-                    Write-Host "[ERROR] Ticket creation returned no result for: $($alert.Title)" -ForegroundColor Red
-                    $errorsEncountered++
-                }
+        # Build ticket payload
+        $ticketPayload = @{
+            title       = $alert.Title
+            companyID   = $companyId
+            queueID     = $Config.TicketQueueId
+            status      = $Config.TicketStatusNew
+            source      = $Config.TicketSourceMonitor
+            priority    = Get-PriorityInt -Priority $alert.Priority
+            description = $description
+        }
+        if ($null -ne $contactId) {
+            $ticketPayload['contactID'] = $contactId
+        }
+
+        Write-Host "[INFO] Creating ticket: $($alert.Title)" -ForegroundColor Cyan
+        try {
+            $result = New-AutotaskTicket -TicketData $ticketPayload
+            if ($result -and ($result.id -or ($result.itemId))) {
+                $newId = if ($result.id) { $result.id } elseif ($result.itemId) { $result.itemId } else { 'unknown' }
+                Write-Host "[SUCCESS] Ticket created (ID: $newId): $($alert.Title)" -ForegroundColor Green
+                $ticketsRaised++
             }
-            catch {
-                Write-Host "[ERROR] Ticket creation threw an exception for '$($alert.Title)': $_" -ForegroundColor Red
+            elseif ($result) {
+                Write-Host "[SUCCESS] Ticket created: $($alert.Title)" -ForegroundColor Green
+                $ticketsRaised++
+            }
+            else {
+                Write-Host "[ERROR] Ticket creation returned no result for: $($alert.Title)" -ForegroundColor Red
                 $errorsEncountered++
             }
+        }
+        catch {
+            Write-Host "[ERROR] Ticket creation threw an exception for '$($alert.Title)': $_" -ForegroundColor Red
+            $errorsEncountered++
         }
     }
 
@@ -1604,7 +1177,7 @@ function Invoke-Main {
         -TicketsRaised     $ticketsRaised `
         -TicketsSuppressed $ticketsSuppressed `
         -ErrorsEncountered $errorsEncountered `
-        -IsTestMode:$effectiveTestMode
+        -IsTestMode:$TestMode
 }
 
 # Entry point
