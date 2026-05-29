@@ -52,11 +52,11 @@ $Config = @{
     ClosedStatusIds         = @(5, 9, 10)
 
     # TX retry rate thresholds (percentage)
-    TxRetryWarningPct       = 15.0
-    TxRetryCriticalPct      = 20.0
+    TxRetryWarningPct       = 50.0
+    TxRetryCriticalPct      = 55.0
 
     # WAN uptime threshold (percentage)
-    WanUptimeWarningPct     = 99.9
+    WanUptimeWarningPct     = 99.0
 
     # Maximum tickets to raise (or preview in TestMode) per run. 0 = unlimited.
     # Useful during testing to avoid flooding Autotask. Alerts beyond this limit
