@@ -412,10 +412,6 @@ function Build-AlertDetail {
     $devModel    = if ($device -and $device.model)   { $device.model }   else { 'N/A' }
     $devFirmware = if ($device -and $device.version) { $device.version } else { 'N/A' }
 
-    # RMM device cross-reference
-    $rmmUrl     = if ($RmmDevice -and $RmmDevice.uid) { "$DattoPortalBase/csm/devices/$($RmmDevice.uid)/summary" } else { 'N/A' }
-    $rmmLastSeen = if ($RmmDevice -and $RmmDevice.lastSeen) { $RmmDevice.lastSeen } else { 'N/A' }
-
     $stats      = if ($site -and $site.statistics)                  { $site.statistics }   else { $null }
     $pct        = if ($stats -and $stats.percentages)               { $stats.percentages } else { $null }
     $ispInfo    = if ($stats -and $stats.ispInfo)                   { $stats.ispInfo }      else { $null }
@@ -456,8 +452,6 @@ Model         : $devModel
 Firmware      : $devFirmware
 Site          : $label
 Host ID       : $siteHostId
-RMM Device    : $rmmUrl
-RMM Last Seen : $rmmLastSeen
 
 NETWORK CONTEXT
 ===============
