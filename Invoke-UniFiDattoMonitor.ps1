@@ -6,10 +6,12 @@
     host/network, evaluates alert conditions, and exits with code 1 if any issues
     are found so Datto RMM raises an alert.
 
-    Site variables required (set at site level in Datto RMM):
-        UnifiSiteKeys  — one of:
-            HostID
-            HostId1|NetworkId1,HostId2|NetworkId2
+    Site variables required — set on the site where your central monitoring
+    machine lives in Datto RMM (all client host IDs go into one variable):
+        UnifiSiteKeys  — comma-separated list of host/network IDs:
+            Single host          : HostID
+            Host with network    : HostId|NetworkId
+            Multiple entries     : HostId1,HostId2|NetworkId2,HostId3
         UnifiApiKey    — UniFi Cloud API key from account.ui.com
 
     Exit codes:
