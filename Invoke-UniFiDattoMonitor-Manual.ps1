@@ -42,6 +42,9 @@ $UnifiApiBase = 'https://api.ui.com/v1'
 $UnifiApiKey  = 'YOUR_UNIFI_API_KEY_HERE'
 # $UnifiApiKey = $env:CS_UnifiApiKey   # <- uncomment to use a Datto global variable instead
 
+# Set to $true to enable verbose local output without passing -Test on the command line
+$TestMode = $false
+
 # Alert thresholds
 $TxRetryWarningPct   = 50.0
 $TxRetryCriticalPct  = 55.0
@@ -67,10 +70,12 @@ function Write-DattoResult {
     Write-Host '<-End Result->'
 }
 
-function Write-TestInfo    { param([string]$Msg) if ($Test) { Write-Host "[INFO]    $Msg" -ForegroundColor Cyan } }
-function Write-TestOk      { param([string]$Msg) if ($Test) { Write-Host "[OK]      $Msg" -ForegroundColor Green } }
-function Write-TestAlert   { param([string]$Msg) if ($Test) { Write-Host "[ALERT]   $Msg" -ForegroundColor Red } }
-function Write-TestWarning { param([string]$Msg) if ($Test) { Write-Host "[WARNING] $Msg" -ForegroundColor Yellow } }
+$TestMode = $TestMode -or $Test   # either the variable or the switch activates test mode
+
+function Write-TestInfo    { param([string]$Msg) if ($TestMode) { Write-Host "[INFO]    $Msg" -ForegroundColor Cyan } }
+function Write-TestOk      { param([string]$Msg) if ($TestMode) { Write-Host "[OK]      $Msg" -ForegroundColor Green } }
+function Write-TestAlert   { param([string]$Msg) if ($TestMode) { Write-Host "[ALERT]   $Msg" -ForegroundColor Red } }
+function Write-TestWarning { param([string]$Msg) if ($TestMode) { Write-Host "[WARNING] $Msg" -ForegroundColor Yellow } }
 
 #endregion
 
@@ -238,7 +243,7 @@ function Resolve-Network {
 
 #region ALERT EVALUATION
 
-if ($Test) {
+if ($TestMode) {
     Write-Host ''
     Write-Host '========================================' -ForegroundColor Cyan
     Write-Host '  UniFi Monitor — Test Mode' -ForegroundColor Cyan
@@ -271,7 +276,7 @@ foreach ($entry in $HostEntries) {
         $networkName   = $networkResult.NetworkName
         $label         = "$hostName > $networkName"
 
-        if ($Test) {
+        if ($TestMode) {
             Write-Host ''
             Write-Host "  --- $label ---" -ForegroundColor White
         }
@@ -285,7 +290,7 @@ foreach ($entry in $HostEntries) {
 
         Write-TestInfo "$($devices.Count) device(s) on host '$hostName'."
 
-        if ($Test) {
+        if ($TestMode) {
             foreach ($dev in $devices) {
                 $devName   = if ($dev.name)  { $dev.name }  else { $dev.model }
                 $devStatus = if ($dev.status) { $dev.status } else { 'unknown' }
@@ -378,7 +383,7 @@ foreach ($entry in $HostEntries) {
 
 #region OUTPUT
 
-if ($Test) {
+if ($TestMode) {
     Write-Host ''
     Write-Host '========================================' -ForegroundColor Cyan
     Write-Host '  Datto RMM Output Preview' -ForegroundColor Cyan
@@ -396,12 +401,12 @@ if ($alerts.Count -gt 0) {
         $summary += " | API errors: $($apiErrors -join ' | ')"
     }
     Write-DattoResult -Status $summary
-    if ($Test) { Write-Host '' ; Write-Host "Exit code: 1 (alert)" -ForegroundColor Red }
+    if ($TestMode) { Write-Host '' ; Write-Host "Exit code: 1 (alert)" -ForegroundColor Red }
     exit 1
 }
 
 Write-DattoResult -Status 'All sites healthy'
-if ($Test) { Write-Host '' ; Write-Host "Exit code: 0 (healthy)" -ForegroundColor Green }
+if ($TestMode) { Write-Host '' ; Write-Host "Exit code: 0 (healthy)" -ForegroundColor Green }
 exit 0
 
 #endregion
